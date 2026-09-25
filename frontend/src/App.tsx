@@ -1,133 +1,199 @@
-import { useCallback, useEffect, useState } from 'react'
-import amexLogo from './assets/amex-logo.png'
-import { api, type DCR, type Filters, type Meta } from './api'
-import { DcrDrawer } from './components/DcrDrawer'
-import { Select } from './components/ui'
-import { DashboardPage } from './pages/DashboardPage'
-import { InboxPage } from './pages/InboxPage'
-import { RegisterPage } from './pages/RegisterPage'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { api, type DCR, type Meta, type RecordFilters } from './api'
+import { Dashboard } from './pages/Dashboard'
+import { Detail } from './pages/Detail'
+import { Inbox } from './pages/Inbox'
+import { NewEntry } from './pages/NewEntry'
+import { Records } from './pages/Records'
+import { CURRENT_USER } from './ui'
 
-type Tab = 'dashboard' | 'register' | 'inbox'
+type View = 'dashboard' | 'records' | 'inbox' | 'detail' | 'new'
+type ListView = 'dashboard' | 'records' | 'inbox'
+const LIST_VIEWS: ListView[] = ['dashboard', 'records', 'inbox']
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'dashboard', label: 'Dashboard' },
-  { id: 'register', label: 'DCR register' },
-  { id: 'inbox', label: 'E-mail inbox' },
-]
+/** Section from the URL hash (#records, #inbox), so reloads and browser back keep the section. */
+const viewFromHash = (): ListView => {
+  const h = window.location.hash.slice(1) as ListView
+  return LIST_VIEWS.includes(h) ? h : 'dashboard'
+}
 
 function App() {
   const [meta, setMeta] = useState<Meta | null>(null)
-  const [offline, setOffline] = useState(false)
-  const [tab, setTab] = useState<Tab>('dashboard')
-  // Filters shared by the dashboard and the register
-  const [filters, setFilters] = useState<Filters>({})
+  const [offline, setOffline] = useState<string | null>(null)
+  const [view, setView] = useState<View>(viewFromHash)
+  const [from, setFrom] = useState<ListView>(viewFromHash) // where "back" goes from detail
   const [selected, setSelected] = useState<DCR | null>(null)
+  const [filters, setFilters] = useState<RecordFilters>({})
   const [refreshKey, setRefreshKey] = useState(0)
 
   const refresh = useCallback(() => {
-    setRefreshKey((k) => k + 1)
-    api.meta().then(setMeta).catch(() => undefined)
-  }, [])
-
-  useEffect(() => {
     api
       .meta()
-      .then(setMeta)
-      .catch(() => setOffline(true))
+      .then((m) => {
+        setMeta(m)
+        setOffline(null)
+      })
+      .catch((e) => setOffline(e instanceof Error ? e.message : String(e)))
+    setRefreshKey((k) => k + 1)
   }, [])
 
-  const openRegister = (f: Filters) => {
-    setFilters({ year: filters.year, office: filters.office, pharma: filters.pharma, ...f })
-    setTab('register')
+  useEffect(refresh, [refresh])
+
+  useEffect(() => {
+    const onHash = () => {
+      const v = viewFromHash()
+      setFrom(v)
+      setView(v)
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
+  const go = (v: View) => {
+    if (v === 'dashboard' || v === 'records' || v === 'inbox') {
+      setFrom(v)
+      if (window.location.hash !== '#' + v) window.history.pushState(null, '', '#' + v)
+    }
+    setView(v)
+    window.scrollTo(0, 0)
   }
-  const openDcrById = (id: string) => api.get(id).then(setSelected).catch(() => undefined)
+  const openDetail = (r: DCR) => {
+    setSelected(r)
+    go('detail')
+  }
+  const openById = (id: string) => api.get(id).then(openDetail).catch(() => undefined)
+
+  const titles: Record<View, [string, string]> = {
+    dashboard: ['Overview', meta ? `${meta.record_count} records · Vienna & Kenya offices · ${meta.tracker_file}` : ''],
+    records: ['Records', 'Filter, sort and open any Deviation, Complaint, Recall, Safety Notice or Partner Issue Report'],
+    inbox: ['E-mail inbox', 'AI reads incoming e-mails and fills new rows of the DCR tracker'],
+    detail: [selected?.status === 'Draft' ? 'Review draft' : 'Record detail', 'Full record view'],
+    new: ['New DCR entry', 'Fill in the fields below, then save'],
+  }
+  const nav: { id: ListView; label: string; icon: ReactNode; count?: number }[] = [
+    { id: 'dashboard', label: 'Dashboard', icon: <IconDashboard /> },
+    { id: 'records', label: 'Records', icon: <IconRecords /> },
+    { id: 'inbox', label: 'E-mail inbox', icon: <IconMail />, count: meta?.draft_count || undefined },
+  ]
+  const active: ListView = view === 'detail' || view === 'new' ? from : view
 
   return (
-    <div className="min-h-screen bg-[#f7f7f6] text-charcoal">
-      <header className="border-b border-cool-steel/40 bg-brand-white">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-8 gap-y-3 px-6 py-4">
-          <img src={amexLogo} alt="AMEX Healthcare" className="h-7 w-auto" />
-          <div>
-            <h1 className="text-lg font-normal leading-tight text-charcoal">DCR Tracker</h1>
-            <p className="text-[11px] text-charcoal/60">Deviations · Complaints · Recalls — SOP 5</p>
-          </div>
-          <nav className="ml-auto flex gap-1" aria-label="Sections">
-            {TABS.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                className={`rounded-md px-3 py-1.5 text-sm font-medium ${
-                  tab === t.id ? 'bg-oxblood text-white' : 'text-charcoal hover:bg-cool-steel/20'
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
-          </nav>
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand__name">DCR Tracker</div>
+          <div className="brand__sub">Deviations · Complaints · Recalls</div>
         </div>
-      </header>
-
-      <main className="mx-auto max-w-7xl px-6 py-6">
-        {offline && (
-          <p className="rounded-md border border-oxblood/40 bg-oxblood/5 px-4 py-3 text-sm">
-            Backend not reachable. Start it with <code>uvicorn app.main:app --reload</code> in <code>/backend</code>.
+        <nav className="nav" aria-label="Sections">
+          {nav.map((n) => (
+            <button key={n.id} className={`nav-item${active === n.id ? ' is-active' : ''}`} onClick={() => go(n.id)}>
+              {n.icon}
+              {n.label}
+              {n.count ? <span className="nav-count">{n.count}</span> : null}
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-footer">
+          <p>
+            Data source: SOP 5 DCR &amp; CAPA tracker ({meta?.tracker_file ?? '…'}). New and edited entries are written back to it.
           </p>
-        )}
-        {meta && (
-          <>
-            {tab !== 'inbox' && (
-              <div className="mb-6 flex flex-wrap items-end gap-3">
-                <Select
-                  label="Year occurred"
-                  value={filters.year}
-                  onChange={(v) => setFilters({ ...filters, year: v })}
-                  options={[...meta.years].reverse().map(String)}
-                  allLabel="All years"
-                />
-                <Select label="AMEX office" value={filters.office} onChange={(v) => setFilters({ ...filters, office: v })} options={meta.offices} />
-                <Select
-                  label="Pharma"
-                  value={filters.pharma}
-                  onChange={(v) => setFilters({ ...filters, pharma: v })}
-                  options={[
-                    { value: 'Y', label: 'Pharma' },
-                    { value: 'N', label: 'Non-pharma' },
-                  ]}
-                />
-                {tab === 'dashboard' && (
-                  <Select label="Type" value={filters.type} onChange={(v) => setFilters({ ...filters, type: v })} options={meta.types} />
-                )}
-                {Object.values(filters).some(Boolean) && (
-                  <button className="pb-1.5 text-xs font-medium text-oxblood hover:underline" onClick={() => setFilters({})}>
-                    Clear filters
-                  </button>
-                )}
-              </div>
-            )}
+          <p>
+            <a href={api.trackerUrl}>Download Excel tracker ↓</a>
+          </p>
+        </div>
+      </aside>
 
-            {tab === 'dashboard' && (
-              <DashboardPage meta={meta} filters={filters} refreshKey={refreshKey} openRegister={openRegister} openDcr={setSelected} />
-            )}
-            {tab === 'register' && (
-              <RegisterPage meta={meta} filters={filters} setFilters={setFilters} refreshKey={refreshKey} openDcr={setSelected} />
-            )}
-            {tab === 'inbox' && <InboxPage meta={meta} onIngested={refresh} openDcrById={openDcrById} />}
-          </>
-        )}
-      </main>
+      <div className="main">
+        <header className="topbar">
+          <div>
+            <div className="topbar__title">{titles[view][0]}</div>
+            <div className="topbar__meta">{titles[view][1]}</div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <button className="btn-primary" onClick={() => go('new')} disabled={!meta}>
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M8 2.5v11M2.5 8h11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+              </svg>
+              New entry
+            </button>
+            <div className="account" title={CURRENT_USER.email}>
+              <div className="account__avatar">{CURRENT_USER.initials}</div>
+              <div className="account__name">{CURRENT_USER.name}</div>
+            </div>
+          </div>
+        </header>
 
-      {selected && meta && (
-        <DcrDrawer
-          dcr={selected}
-          meta={meta}
-          onClose={() => setSelected(null)}
-          onSaved={(d) => {
-            setSelected(d)
-            refresh()
-          }}
-        />
-      )}
+        {offline && (
+          <section className="view">
+            <div className="notice is-critical">
+              Backend not reachable ({offline}). Start it with <code>uvicorn app.main:app --reload</code> in{' '}
+              <code>/backend</code>.
+            </div>
+          </section>
+        )}
+
+        {meta && view === 'dashboard' && (
+          <Dashboard refreshKey={refreshKey} openDetail={openDetail} openDrafts={() => go('inbox')} />
+        )}
+        {meta && view === 'records' && (
+          <Records meta={meta} filters={filters} setFilters={setFilters} refreshKey={refreshKey} openDetail={openDetail} />
+        )}
+        {meta && view === 'inbox' && (
+          <Inbox meta={meta} refreshKey={refreshKey} onChanged={refresh} openDetail={openDetail} openById={openById} />
+        )}
+        {meta && view === 'detail' && selected && (
+          <Detail
+            record={selected}
+            meta={meta}
+            backLabel={`Back to ${from === 'dashboard' ? 'dashboard' : from === 'inbox' ? 'inbox' : 'records'}`}
+            onBack={() => go(from)}
+            onSaved={(r) => {
+              setSelected(r)
+              refresh()
+            }}
+          />
+        )}
+        {meta && view === 'new' && (
+          <NewEntry
+            meta={meta}
+            onCancel={() => go(from)}
+            onCreated={(r) => {
+              refresh()
+              openDetail(r)
+            }}
+          />
+        )}
+      </div>
     </div>
+  )
+}
+
+function IconDashboard() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="1.5" y="1.5" width="6" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.3" />
+      <rect x="8.5" y="1.5" width="6" height="9" rx="1.2" stroke="currentColor" strokeWidth="1.3" />
+      <rect x="1.5" y="9.5" width="6" height="5" rx="1.2" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
+  )
+}
+
+function IconRecords() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="1.5" y="2" width="13" height="12" rx="1.4" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M1.5 6h13" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M4.5 9h4M4.5 11.3h6.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function IconMail() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="1.5" y="3" width="13" height="10" rx="1.4" stroke="currentColor" strokeWidth="1.3" />
+      <path d="m2 4 6 4.5L14 4" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+    </svg>
   )
 }
 

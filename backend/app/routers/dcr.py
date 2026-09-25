@@ -35,7 +35,12 @@ def _sort_newest(records: list[DCR]) -> list[DCR]:
 @router.get("/meta")
 def meta() -> dict:
     confirmed = _confirmed()
-    customers = sorted({r.customer for r in confirmed if r.customer and r.customer != "N/A"}, key=str.lower)
+    # one entry per customer regardless of spelling case ("Chemonics" / "CHEMONICS"); most frequent spelling wins
+    spellings = Counter(r.customer.strip() for r in confirmed if r.customer and r.customer != "N/A")
+    by_key: dict[str, str] = {}
+    for name, _ in spellings.most_common():
+        by_key.setdefault(name.lower(), name)
+    customers = sorted(by_key.values(), key=str.lower)
     return {
         "types": DCR_TYPES,
         "categories": CATEGORIES,
@@ -52,41 +57,64 @@ def meta() -> dict:
     }
 
 
+OVERDUE_DAYS = 60  # SOP 5 threshold, same as quality.OPEN_TOO_LONG_DAYS
+TOP_N = 8
+
+
+def _top_open_by(records: list[DCR], field: str) -> list[dict]:
+    """Open cases per supplier/customer, case-insensitive; most frequent spelling is shown."""
+    groups: dict[str, Counter] = {}
+    for r in records:
+        value = (getattr(r, field) or "").strip()
+        if r.status != "Open" or not value or value == "N/A":
+            continue
+        groups.setdefault(value.lower(), Counter())[value] += 1
+    rows = [{"name": c.most_common(1)[0][0], "count": sum(c.values())} for c in groups.values()]
+    return sorted(rows, key=lambda x: (-x["count"], x["name"].lower()))[:TOP_N]
+
+
 @router.get("/dashboard")
-def dashboard() -> dict:
+def dashboard(year: int | None = None) -> dict:
+    """KPIs cover the whole tracker; the charts follow the optional `year` filter (year occurred)."""
     recs = _confirmed()
+    today = date.today()
     open_recs = [r for r in recs if r.status == "Open"]
-    this_year = str(date.today().year)
+
+    def overdue(r: DCR) -> bool:
+        occurred = parse_iso(r.occurred_on)
+        return occurred is not None and (today - occurred).days > OVERDUE_DAYS
 
     ytd_eur = 0.0
     for r in recs:
-        if (r.occurred_on or "").startswith(this_year):
+        if (r.occurred_on or "").startswith(str(today.year)):
             amount, currency = parse_financial(r.financial_impact)
             if currency == "EUR":
                 ytd_eur += amount
 
-    by_type = Counter(r.type for r in recs if r.type)
-    by_category = Counter(r.category or "Not set" for r in recs)
-
-    occurred = Counter(r.occurred_on[:4] for r in recs if parse_iso(r.occurred_on))
-    closed = Counter(r.closure_date[:4] for r in recs if parse_iso(r.closure_date))
-    years = sorted(y for y in set(occurred) | set(closed) if y >= "2023")
+    charted = [r for r in recs if not year or (r.occurred_on or "").startswith(str(year))]
+    by_type = Counter(r.type for r in charted if r.type)
+    by_category = Counter(r.category or "Other" for r in charted)
+    years = sorted({int(r.occurred_on[:4]) for r in recs if parse_iso(r.occurred_on)})
 
     attention = sorted((r for r in open_recs if r.critical == "Y"), key=lambda r: r.occurred_on or "")[:7]
 
     return {
-        "year": int(this_year),
+        "year": today.year,
+        "filter_year": year,
+        "years": [y for y in years if y >= today.year - 2],  # year pills: last three years
         "kpis": {
+            "total": len(recs),
             "open": len(open_recs),
+            "overdue": sum(overdue(r) for r in open_recs),
+            "financial_ytd_eur": round(ytd_eur, 2),
             "critical_open": sum(r.critical == "Y" for r in open_recs),
             "capa_pending": sum(r.capa_needed == "Y" for r in open_recs),
-            "financial_ytd_eur": round(ytd_eur, 2),
-            "total": len(recs),
             "drafts": sum(r.status == "Draft" for r in store.all()),
         },
         "by_type": [{"name": t, "count": by_type.get(t, 0)} for t in DCR_TYPES],
-        "by_category": [{"name": k, "count": v} for k, v in by_category.most_common()],
-        "trend": [{"year": y, "occurred": occurred.get(y, 0), "closed": closed.get(y, 0)} for y in years],
+        "by_category": [{"name": k, "count": v} for k, v in by_category.most_common(TOP_N)],
+        "open_by_supplier": _top_open_by(charted, "supplier"),
+        "open_by_customer": _top_open_by(charted, "customer"),
         "attention": attention,
     }
 
@@ -116,7 +144,7 @@ def list_dcrs(
             continue
         if office and r.amex_office != office:
             continue
-        if customer and r.customer != customer:
+        if customer and (r.customer or "").strip().lower() != customer.strip().lower():
             continue
         if q:
             hay = " ".join(

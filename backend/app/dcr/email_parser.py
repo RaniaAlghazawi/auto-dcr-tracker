@@ -4,7 +4,7 @@ import hashlib
 import io
 import re
 from email import policy
-from email.parser import Parser
+from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
 
 from pydantic import BaseModel, Field
@@ -49,8 +49,10 @@ def _ids(value) -> list[str]:
     return re.findall(r"<[^>]+>", str(value or ""))
 
 
-def parse_email(raw: str) -> ParsedEmail:
-    msg = Parser(policy=policy.default).parsestr(raw)
+def parse_email(raw: str | bytes) -> ParsedEmail:
+    # Parse bytes, not str: with a str source the email package mangles 8-bit UTF-8 bodies (° → �).
+    data = raw.encode("utf-8") if isinstance(raw, str) else raw
+    msg = BytesParser(policy=policy.default).parsebytes(data)
     has_headers = bool(msg["From"] or msg["Subject"])
 
     attachments: list[str] = []
@@ -59,7 +61,7 @@ def parse_email(raw: str) -> ParsedEmail:
         body = part.get_content() if part else ""
         attachments = [a.get_filename() for a in msg.iter_attachments() if a.get_filename()]
     else:
-        body = msg.get_content() if has_headers else raw
+        body = msg.get_content() if has_headers else data.decode("utf-8", errors="replace")
     if "<html" in body[:500].lower():
         body = re.sub(r"<[^>]+>", " ", body)
 
@@ -72,7 +74,7 @@ def parse_email(raw: str) -> ParsedEmail:
 
     sender = str(msg["From"] or "unknown")
     return ParsedEmail(
-        message_id=str(msg["Message-ID"] or "").strip() or _fallback_id(raw.encode("utf-8")),
+        message_id=str(msg["Message-ID"] or "").strip() or _fallback_id(data),
         in_reply_to=str(msg["In-Reply-To"]).strip() if msg["In-Reply-To"] else None,
         references=_ids(msg["References"]),
         sender=sender,
@@ -119,4 +121,4 @@ def parse_any(data: bytes) -> ParsedEmail:
     """.msg (Outlook) or RFC 822 text (.eml / .txt)."""
     if data[:8] == OLE_SIGNATURE:
         return parse_msg(data)
-    return parse_email(data.decode("utf-8", errors="replace"))
+    return parse_email(data)
