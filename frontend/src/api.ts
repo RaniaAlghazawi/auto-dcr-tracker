@@ -1,4 +1,4 @@
-export type DcrStatus = 'Draft' | 'Open' | 'Closed'
+export type DcrStatus = 'Open' | 'Closed'
 
 export interface SourceEmail {
   message_id: string
@@ -59,7 +59,6 @@ export interface Meta {
   offices: string[]
   customers: string[]
   record_count: number
-  draft_count: number
   next_tracking_number: string
   tracker_file: string
   extractor: 'claude' | 'rules'
@@ -83,7 +82,6 @@ export interface Dashboard {
     financial_ytd_eur: number
     critical_open: number
     capa_pending: number
-    drafts: number
   }
   by_type: NamedCount[]
   by_category: NamedCount[]
@@ -99,33 +97,38 @@ export interface RecordFilters {
   critical?: string
   office?: string
   customer?: string
+  /** "true": open more than 60 days — same rule as the dashboard's Overdue tile */
+  overdue?: string
+  /** cases occurred in this year with a EUR financial impact — the dashboard's financial tile */
+  financial_year?: string
 }
 
-export type IngestResultKind = 'added' | 'created' | 'updated' | 'attached' | 'not_dcr' | 'duplicate'
-
-export interface IngestResult {
-  file?: string
-  result: IngestResultKind
-  id?: string
-  subject?: string
-  method?: string
-  tracking_number?: string | null
+export interface ProjectFolder {
+  project: string
+  folder: string
+  emails: number
 }
 
-export interface SampleEmail {
-  name: string
-  subject: string
-  sender: string
-  date: string | null
-  processed: boolean
+/** What Claude read from a project's e-mail folder (nothing is saved yet). */
+export interface ProjectReading {
+  project: string
+  folders: string[]
+  emails: { subject: string; sender: string; date: string | null; attachments: string[] }[]
+  skipped: { file: string; reason: string }[]
+  fields: DcrPatch
+  method: 'claude' | 'rules' | null
+  is_dcr: boolean | null
+  title?: string
+  requested_actions?: string | null
+  reported_by_party?: string | null
+  missing_information: string[]
 }
 
-export interface IgnoredEmail {
-  message_id: string
-  sender: string
-  subject: string
-  date: string | null
-  method?: string
+export type NewEntryPayload = DcrPatch & {
+  source_project?: string
+  extraction_method?: string | null
+  requested_actions?: string | null
+  reported_by_party?: string | null
 }
 
 function query(params: Record<string, string | boolean | undefined>): string {
@@ -160,34 +163,19 @@ export const api = {
   meta: () => fetch('/api/meta').then((r) => json<Meta>(r)),
   dashboard: (year?: number | null) => fetch(`/api/dashboard${query({ year: year ? String(year) : undefined })}`).then((r) => json<Dashboard>(r)),
   list: (f: RecordFilters) => fetch(`/api/dcrs${query({ ...f })}`).then((r) => json<DCR[]>(r)),
-  drafts: () => fetch('/api/dcrs?status=Draft').then((r) => json<DCR[]>(r)),
   get: (id: string) => fetch(`/api/dcrs/${encodeURIComponent(id)}`).then((r) => json<DCR>(r)),
-  create: (values: DcrPatch) => post('/api/dcrs', values).then((r) => json<DCR>(r)),
+  create: (values: NewEntryPayload) => post('/api/dcrs', values).then((r) => json<DCR>(r)),
   update: (id: string, patch: DcrPatch) =>
     fetch(`/api/dcrs/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     }).then((r) => json<DCR>(r)),
-  confirm: (id: string, entered_by: string) =>
-    post(`/api/dcrs/${encodeURIComponent(id)}/confirm`, { entered_by }).then((r) => json<DCR>(r)),
   trackerUrl: '/api/tracker.xlsx',
 
-  ingestText: (raw: string, auto_add: boolean, entered_by: string) =>
-    post('/api/emails', { raw, auto_add, entered_by }).then((r) => json<IngestResult>(r)),
-  ingestFiles: (files: FileList, auto_add: boolean, entered_by: string) => {
-    const body = new FormData()
-    for (const f of Array.from(files)) body.append('files', f)
-    body.append('auto_add', String(auto_add))
-    body.append('entered_by', entered_by)
-    return fetch('/api/emails/upload', { method: 'POST', body }).then((r) => json<IngestResult[]>(r))
-  },
-  samples: () => fetch('/api/emails/samples').then((r) => json<SampleEmail[]>(r)),
-  ingestSample: (name: string, auto_add: boolean, entered_by: string) =>
-    post(`/api/emails/samples/${encodeURIComponent(name)}${query({ auto_add, entered_by })}`).then((r) =>
-      json<IngestResult>(r),
-    ),
-  ignored: () => fetch('/api/emails/ignored').then((r) => json<IgnoredEmail[]>(r)),
+  projects: () => fetch('/api/projects').then((r) => json<ProjectFolder[]>(r)),
+  readProject: (project: string) =>
+    post(`/api/projects/${encodeURIComponent(project)}/read`).then((r) => json<ProjectReading>(r)),
   reload: () => post('/api/admin/reload').then((r) => json<{ records: number }>(r)),
   reset: () => post('/api/admin/reset').then((r) => json<{ records: number }>(r)),
 }

@@ -1,25 +1,24 @@
-"""DCR store. The tracker workbook is the source of truth for confirmed entries.
+"""DCR store. The tracker workbook is the source of truth.
 
-- Confirmed DCRs live in the Excel tracker (resources/output/DCR_Tracker.xlsx, a working copy of
+- DCRs live in the Excel tracker (resources/output/DCR_Tracker.xlsx, a working copy of
   resources/template_SOP.xlsx, or DCR_TRACKER_PATH). They are read from it on start and written back
   row by row when added or edited.
-- Drafts (e-mail extractions awaiting review), the e-mails behind each DCR and ignored e-mails are kept
-  in resources/data/dcr_state.json because the tracker has no columns for them.
+- The e-mails behind an entry (read from its project folder in resources/) are kept in
+  resources/data/dcr_state.json, keyed by DCR number, because the tracker has no column for them.
 """
 
 import json
 import logging
 import os
-import re
 import threading
 from datetime import date
 from pathlib import Path
 
 from app.dcr import quality
-from app.dcr.email_parser import NO_SUBJECT, ParsedEmail, domain_of, normalize_subject, parse_any
 from app.dcr.excel_writer import ensure_working_copy, write_rows
-from app.dcr.extractor import Extraction, extract
+from app.dcr.extractor import extract
 from app.dcr.master_data import build_master_data
+from app.dcr.project_emails import RESOURCES_DIR, find_project_dirs, load_project_emails
 from app.dcr.schema import DCR, SourceEmail
 from app.dcr.tracker_import import COLUMNS, import_tracker
 from app.resources import resource_path
@@ -29,18 +28,13 @@ log = logging.getLogger(__name__)
 TEMPLATE_PATH = resource_path("template_SOP.xlsx")
 TRACKER_PATH = Path(os.getenv("DCR_TRACKER_PATH") or resource_path("output", "DCR_Tracker.xlsx"))
 STATE_PATH = resource_path("data", "dcr_state.json")
-RESOURCES_DIR = resource_path()
-EMAIL_SUFFIXES = (".eml", ".msg")
-# runtime folders under resources/ that never hold input e-mails
-SKIP_DIRS = {"data", "output", "master_data"}
 
-# Extracted fields a follow-up e-mail may fill in on an already confirmed DCR (never overwrites)
-FILLABLE = [
+# Tracker columns Claude fills from the e-mails (the reviewer can change all of them before saving)
+EXTRACTED_FIELDS = [
     "type", "category", "critical", "occurred_on", "amex_office", "pharma", "supplier", "customer",
     "project", "responsible_party", "responsible_party_name", "description", "root_cause",
     "financial_impact", "actions_taken", "capa_needed", "closure_date",
 ]
-AUTO_REPLY = re.compile(r"^\s*(automatic reply|automatische antwort|out of office|abwesenheit|réponse automatique)\b", re.I)
 EMAIL_META = ["source_emails", "extraction_method", "reported_by_party", "freight_forwarder", "requested_actions"]
 
 
@@ -48,20 +42,15 @@ class Store:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self.records: dict[str, DCR] = {}
-        self.email_links: dict[str, dict] = {}  # tracking number -> EMAIL_META of that DCR
-        self.ignored_emails: list[dict] = []
+        self.email_links: dict[str, dict] = {}  # DCR number -> EMAIL_META of that entry
 
     # ------------------------------------------------------------ persistence
     def load(self) -> None:
         """(Re-)read the Excel tracker and the app state. Also picks up edits made directly in Excel."""
         with self._lock:
             ensure_working_copy(TEMPLATE_PATH, TRACKER_PATH)
-            drafts: list[DCR] = []
             if STATE_PATH.exists():
-                state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-                drafts = [DCR(**d) for d in state.get("drafts", [])]
-                self.email_links = state.get("email_links", {})
-                self.ignored_emails = state.get("ignored_emails", [])
+                self.email_links = json.loads(STATE_PATH.read_text(encoding="utf-8")).get("email_links", {})
             self.records = {}
             for rec in import_tracker(TRACKER_PATH):
                 meta = self.email_links.get(rec.tracking_number)
@@ -70,26 +59,19 @@ class Store:
                     for k, v in meta.items():
                         setattr(rec, k, [SourceEmail(**e) for e in v] if k == "source_emails" else v)
                 self.records[rec.id] = rec
-            for d in drafts:
-                self.records[d.id] = d
             self.refresh_issues()
-            log.info("Loaded %d DCRs from %s (+%d drafts)", len(self.records) - len(drafts), TRACKER_PATH.name, len(drafts))
+            log.info("Loaded %d DCRs from %s", len(self.records), TRACKER_PATH.name)
 
     def save_state(self) -> None:
         STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "drafts": [r.model_dump() for r in self.records.values() if r.status == "Draft"],
-            "email_links": self.email_links,
-            "ignored_emails": self.ignored_emails,
-        }
-        STATE_PATH.write_text(json.dumps(payload, indent=1, ensure_ascii=False), encoding="utf-8")
+        STATE_PATH.write_text(json.dumps({"email_links": self.email_links}, indent=1, ensure_ascii=False), encoding="utf-8")
 
     def reset(self) -> None:
-        """Start over: fresh copy of the template workbook, no drafts, no e-mail history."""
+        """Start over: fresh copy of the template workbook, no linked e-mails."""
         with self._lock:
             TRACKER_PATH.unlink(missing_ok=True)
             STATE_PATH.unlink(missing_ok=True)
-            self.email_links, self.ignored_emails = {}, []
+            self.email_links = {}
             self.load()
 
     # ------------------------------------------------------------ queries
@@ -113,13 +95,37 @@ class Store:
         ]
         return f"{yy}-{(max(numbers) + 1 if numbers else 1):03d}"
 
-    def sample_emails(self) -> list[Path]:
-        """Every .eml/.msg under resources/ (test e-mails and the real e-mail folders)."""
-        return sorted(
-            p for p in RESOURCES_DIR.rglob("*")
-            if p.suffix.lower() in EMAIL_SUFFIXES and p.is_file()
-            and p.relative_to(RESOURCES_DIR).parts[0] not in SKIP_DIRS
+    # ------------------------------------------------------------ project e-mails
+    def read_project(self, project: str) -> dict:
+        """Read the project's e-mail folder and let Claude propose the tracker fields (nothing is saved)."""
+        folders = find_project_dirs(project)
+        emails, skipped = load_project_emails(project)
+        result = {
+            "project": project,
+            "folders": [f.relative_to(RESOURCES_DIR).as_posix() for f in folders],
+            "emails": [{"subject": e.subject, "sender": e.sender, "date": e.date, "attachments": e.attachments} for e in emails],
+            "skipped": skipped,
+            "fields": {},
+            "method": None,
+            "is_dcr": None,
+            "missing_information": [],
+        }
+        if not emails:
+            return result
+        ex, method = extract(emails, build_master_data(self.all()))
+        fields = {f: getattr(ex, f) for f in EXTRACTED_FIELDS if getattr(ex, f) not in (None, "")}
+        fields.setdefault("project", project)
+        result.update(
+            fields=fields,
+            method=method,
+            is_dcr=ex.is_dcr,
+            title=ex.title,
+            requested_actions=ex.requested_actions or None,
+            reported_by_party=ex.reported_by_party or None,
+            freight_forwarder=ex.freight_forwarder or None,
+            missing_information=ex.missing_information,
         )
+        return result
 
     # ------------------------------------------------------------ Excel
     def _write(self, rec: DCR) -> None:
@@ -131,154 +137,46 @@ class Store:
                 for k in EMAIL_META
             }
 
-    # ------------------------------------------------------------ e-mail ingestion
-    def _find_thread(self, email: ParsedEmail) -> DCR | None:
-        ids = {i for i in [email.in_reply_to, *email.references] if i}
-        if ids:
-            for rec in self.records.values():
-                if any(src.message_id in ids for src in rec.source_emails):
-                    return rec
-        subject = email.thread_subject
-        if not subject or subject == NO_SUBJECT:
-            return None
-        for rec in self.records.values():
-            if rec.source_emails and normalize_subject(rec.source_emails[0].subject) == subject:
-                return rec
-        return None
-
-    def ingest(self, data: bytes, auto_add: bool = False, entered_by: str | None = None) -> dict:
-        """Parse an e-mail, attach it to its DCR thread or create a new draft.
-
-        auto_add: write a new DCR straight into the Excel tracker instead of leaving a draft for review.
-        """
-        with self._lock:
-            email = parse_any(data)
-            known = {src.message_id for r in self.records.values() for src in r.source_emails}
-            known |= {m["message_id"] for m in self.ignored_emails}
-            if email.message_id in known:
-                return {"result": "duplicate", "subject": email.subject}
-
-            if AUTO_REPLY.match(email.subject):
-                # out-of-office replies are never DCR evidence — don't attach them to a case either
-                self.ignored_emails.append(
-                    {"message_id": email.message_id, "sender": email.sender, "subject": email.subject,
-                     "date": email.date, "method": "auto-reply"}
-                )
-                self.save_state()
-                return {"result": "not_dcr", "subject": email.subject, "method": "auto-reply"}
-
-            existing = self._find_thread(email)
-            thread = [_to_parsed(s) for s in existing.source_emails] + [email] if existing else [email]
-            extraction, method = extract(thread, build_master_data(self.all()))
-
-            if not existing and not extraction.is_dcr:
-                self.ignored_emails.append(
-                    {"message_id": email.message_id, "sender": email.sender, "subject": email.subject,
-                     "date": email.date, "method": method}
-                )
-                self.save_state()
-                return {"result": "not_dcr", "subject": email.subject, "method": method}
-
-            src = SourceEmail(**email.model_dump(include=set(SourceEmail.model_fields)))
-            if existing:
-                rec = existing
-                rec.source_emails.append(src)
-                if rec.status == "Draft":
-                    _apply_extraction(rec, extraction, method, overwrite=True)
-                    result = "updated"
-                else:
-                    # confirmed entry: only fill what is still empty, then update its Excel row
-                    _apply_extraction(rec, extraction, method, overwrite=False)
-                    rec.status = "Closed" if rec.closure_date else "Open"
-                    self._write(rec)
-                    result = "attached"
-            else:
-                rec = DCR(id=self._next_draft_id(), status="Draft", source="email", source_emails=[src])
-                _apply_extraction(rec, extraction, method, overwrite=True)
-                self.records[rec.id] = rec
-                result = "created"
-
-            rec.issues = quality.check(rec)
-            self.save_state()
-            out = {"result": result, "id": rec.id, "subject": email.subject, "method": method,
-                   "tracking_number": rec.tracking_number}
-            if result == "created" and auto_add:
-                confirmed = self.confirm(rec.id, entered_by)
-                out.update(result="added", id=confirmed.id, tracking_number=confirmed.tracking_number)
-            return out
-
-    def _next_draft_id(self) -> str:
-        used = [int(k[2:]) for k in self.records if k.startswith("E-") and k[2:].isdigit()]
-        return f"E-{(max(used) + 1 if used else 1):04d}"
-
     # ------------------------------------------------------------ edits
-    def confirm(self, dcr_id: str, entered_by: str | None) -> DCR:
-        """Accept a draft: assign the next tracking number and add it as a row to the Excel tracker."""
-        with self._lock:
-            rec = self.records[dcr_id]
-            if rec.status != "Draft":
-                return rec
-            rec.tracking_number = self.next_tracking_number()
-            if entered_by and not rec.entered_by:
-                rec.entered_by = entered_by
-            rec.status = "Closed" if rec.closure_date else "Open"
-            try:
-                self._write(rec)
-            except Exception:
-                rec.tracking_number, rec.status = None, "Draft"
-                raise
-            del self.records[dcr_id]
-            rec.id = f"T-{rec.tracking_number}"
-            self.records[rec.id] = rec
-            rec.issues = quality.check(rec)
-            self.save_state()
-            return rec
-
     def update(self, dcr_id: str, changes: dict) -> DCR:
         with self._lock:
             rec = self.records[dcr_id]
             before = rec.model_copy(deep=True)
             for field, value in changes.items():
                 setattr(rec, field, value)
-            if rec.status != "Draft":
-                rec.status = "Closed" if rec.closure_date else "Open"
-                try:
-                    self._write(rec)
-                except Exception:
-                    self.records[dcr_id] = before
-                    raise
+            rec.status = "Closed" if rec.closure_date else "Open"
+            try:
+                self._write(rec)
+            except Exception:
+                self.records[dcr_id] = before
+                raise
             rec.issues = quality.check(rec)
             self.save_state()
             return rec
 
-    def create(self, values: dict, entered_by: str | None) -> DCR:
-        """A manual "New entry" — goes straight into the Excel tracker."""
+    def create(self, values: dict, source_project: str | None = None, email_meta: dict | None = None) -> DCR:
+        """New entry: next DCR number, written as a new row to the Excel tracker.
+
+        source_project links the e-mails of that project folder to the entry.
+        """
         with self._lock:
-            rec = DCR(id=self._next_draft_id(), status="Draft", source="tracker", **values)
+            rec = DCR(id="new", **values)
+            if source_project:
+                emails, _ = load_project_emails(source_project)
+                rec.source_emails = [SourceEmail(**e.model_dump(include=set(SourceEmail.model_fields))) for e in emails]
+                rec.source = "email" if emails else "tracker"
+                for k, v in (email_meta or {}).items():
+                    if k in EMAIL_META and v:
+                        setattr(rec, k, v)
+            rec.tracking_number = self.next_tracking_number()
+            rec.id = f"T-{rec.tracking_number}"
+            rec.status = "Closed" if rec.closure_date else "Open"
+            self._write(rec)
             self.records[rec.id] = rec
-            try:
-                return self.confirm(rec.id, entered_by)
-            except Exception:
-                del self.records[rec.id]
-                raise
-
-
-def _to_parsed(src: SourceEmail) -> ParsedEmail:
-    return ParsedEmail(**src.model_dump(), sender_domain=domain_of(src.sender))
-
-
-def _apply_extraction(rec: DCR, ex: Extraction, method: str, overwrite: bool) -> None:
-    for field in FILLABLE:
-        value = getattr(ex, field, None)
-        if value in (None, ""):
-            continue
-        if overwrite or getattr(rec, field) in (None, "", "N/A"):
-            setattr(rec, field, value)
-    for field in ("freight_forwarder", "reported_by_party", "requested_actions"):
-        value = getattr(ex, field, None)
-        if value and (overwrite or not getattr(rec, field)):
-            setattr(rec, field, value)
-    rec.extraction_method = method
+            rec.issues = quality.check(rec)
+            self.save_state()
+            return rec
 
 
 store = Store()
+

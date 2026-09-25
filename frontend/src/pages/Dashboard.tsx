@@ -1,14 +1,14 @@
 import { useEffect, useState, type CSSProperties } from 'react'
-import { api, type Dashboard as DashboardData, type DCR, type NamedCount } from '../api'
+import { api, type Dashboard as DashboardData, type DCR, type NamedCount, type RecordFilters } from '../api'
 import { CapaBadge, fmtMoney, OccurredCell, show, TYPE_COLOR, TYPE_LABEL, TypeBadge } from '../ui'
 
 interface Props {
   refreshKey: number
+  openRecords: (filters: RecordFilters) => void
   openDetail: (r: DCR) => void
-  openDrafts: () => void
 }
 
-export function Dashboard({ refreshKey, openDetail, openDrafts }: Props) {
+export function Dashboard({ refreshKey, openDetail, openRecords }: Props) {
   const [year, setYear] = useState<number | null>(null) // charts only; KPIs cover the whole tracker
   const [data, setData] = useState<DashboardData | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -28,32 +28,30 @@ export function Dashboard({ refreshKey, openDetail, openDrafts }: Props) {
 
   const k = data.kpis
   const tiles = [
-    { label: 'Total entries', value: k.total, caption: 'every DCR ever logged in the tracker', bar: 'var(--accent)' },
-    { label: 'Open cases', value: k.open, caption: 'across Vienna & Kenya', bar: 'var(--status-open)' },
-    { label: 'Overdue', value: k.overdue, caption: 'open more than 60 days (SOP 5 threshold)', bar: 'var(--critical)' },
-    { label: `${data.year} financial impact`, value: fmtMoney(k.financial_ytd_eur), caption: 'logged YTD, EUR-denominated', bar: 'var(--finance)' },
+    { label: 'Total entries', value: k.total, caption: 'every DCR ever logged in the tracker', bar: 'var(--accent)', filters: {} },
+    { label: 'Open cases', value: k.open, caption: 'across Vienna & Kenya', bar: 'var(--status-open)', filters: { status: 'Open' } },
+    { label: 'Overdue', value: k.overdue, caption: 'open more than 60 days (SOP 5 threshold)', bar: 'var(--critical)', filters: { overdue: 'true' } },
+    { label: `${data.year} financial impact`, value: fmtMoney(k.financial_ytd_eur), caption: 'logged YTD, EUR-denominated', bar: 'var(--finance)', filters: { financial_year: String(data.year) } },
   ]
   const period = year ? String(year) : 'full tracker'
 
   return (
     <section className="view">
-      {k.drafts > 0 && (
-        <div className="notice">
-          <b>{k.drafts}</b> e-mail{k.drafts === 1 ? '' : 's'} analysed by AI {k.drafts === 1 ? 'is' : 'are'} waiting for review
-          before {k.drafts === 1 ? 'it goes' : 'they go'} into the Excel tracker.{' '}
-          <button className="link-btn" onClick={openDrafts}>
-            Review now →
-          </button>
-        </div>
-      )}
-
       <div className="kpi-grid">
         {tiles.map((t) => (
-          <div key={t.label} className="card kpi-tile" style={{ '--bar-color': t.bar } as CSSProperties}>
+          <button
+            key={t.label}
+            type="button"
+            className="card kpi-tile is-clickable"
+            style={{ '--bar-color': t.bar } as CSSProperties}
+            onClick={() => openRecords(t.filters)}
+            title={`Show the ${t.label.toLowerCase()} as a list`}
+          >
             <div className="kpi-tile__label">{t.label}</div>
             <div className="kpi-tile__value tnum">{t.value}</div>
             <div className="kpi-tile__caption">{t.caption}</div>
-          </div>
+            <div className="kpi-tile__more">View list →</div>
+          </button>
         ))}
       </div>
 

@@ -2,16 +2,15 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { api, type DCR, type Meta, type RecordFilters } from './api'
 import { Dashboard } from './pages/Dashboard'
 import { Detail } from './pages/Detail'
-import { Inbox } from './pages/Inbox'
 import { NewEntry } from './pages/NewEntry'
 import { Records } from './pages/Records'
 import { CURRENT_USER } from './ui'
 
-type View = 'dashboard' | 'records' | 'inbox' | 'detail' | 'new'
-type ListView = 'dashboard' | 'records' | 'inbox'
-const LIST_VIEWS: ListView[] = ['dashboard', 'records', 'inbox']
+type View = 'dashboard' | 'records' | 'detail' | 'new'
+type ListView = 'dashboard' | 'records'
+const LIST_VIEWS: ListView[] = ['dashboard', 'records']
 
-/** Section from the URL hash (#records, #inbox), so reloads and browser back keep the section. */
+/** Section from the URL hash (#dashboard, #records), so reloads and browser back keep the section. */
 const viewFromHash = (): ListView => {
   const h = window.location.hash.slice(1) as ListView
   return LIST_VIEWS.includes(h) ? h : 'dashboard'
@@ -50,7 +49,7 @@ function App() {
   }, [])
 
   const go = (v: View) => {
-    if (v === 'dashboard' || v === 'records' || v === 'inbox') {
+    if (v === 'dashboard' || v === 'records') {
       setFrom(v)
       if (window.location.hash !== '#' + v) window.history.pushState(null, '', '#' + v)
     }
@@ -61,19 +60,16 @@ function App() {
     setSelected(r)
     go('detail')
   }
-  const openById = (id: string) => api.get(id).then(openDetail).catch(() => undefined)
 
   const titles: Record<View, [string, string]> = {
     dashboard: ['Overview', meta ? `${meta.record_count} records · Vienna & Kenya offices · ${meta.tracker_file}` : ''],
     records: ['Records', 'Filter, sort and open any Deviation, Complaint, Recall, Safety Notice or Partner Issue Report'],
-    inbox: ['E-mail inbox', 'AI reads incoming e-mails and fills new rows of the DCR tracker'],
-    detail: [selected?.status === 'Draft' ? 'Review draft' : 'Record detail', 'Full record view'],
-    new: ['New DCR entry', 'Fill in the fields below, then save'],
+    detail: ['Record detail', 'Full record view'],
+    new: ['New DCR entry', 'Enter the project number to fill the entry from its e-mails, check the fields, then save'],
   }
-  const nav: { id: ListView; label: string; icon: ReactNode; count?: number }[] = [
+  const nav: { id: ListView; label: string; icon: ReactNode }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: <IconDashboard /> },
     { id: 'records', label: 'Records', icon: <IconRecords /> },
-    { id: 'inbox', label: 'E-mail inbox', icon: <IconMail />, count: meta?.draft_count || undefined },
   ]
   const active: ListView = view === 'detail' || view === 'new' ? from : view
 
@@ -89,7 +85,6 @@ function App() {
             <button key={n.id} className={`nav-item${active === n.id ? ' is-active' : ''}`} onClick={() => go(n.id)}>
               {n.icon}
               {n.label}
-              {n.count ? <span className="nav-count">{n.count}</span> : null}
             </button>
           ))}
         </nav>
@@ -133,19 +128,23 @@ function App() {
         )}
 
         {meta && view === 'dashboard' && (
-          <Dashboard refreshKey={refreshKey} openDetail={openDetail} openDrafts={() => go('inbox')} />
+          <Dashboard
+            refreshKey={refreshKey}
+            openDetail={openDetail}
+            openRecords={(f) => {
+              setFilters(f)
+              go('records')
+            }}
+          />
         )}
         {meta && view === 'records' && (
           <Records meta={meta} filters={filters} setFilters={setFilters} refreshKey={refreshKey} openDetail={openDetail} />
-        )}
-        {meta && view === 'inbox' && (
-          <Inbox meta={meta} refreshKey={refreshKey} onChanged={refresh} openDetail={openDetail} openById={openById} />
         )}
         {meta && view === 'detail' && selected && (
           <Detail
             record={selected}
             meta={meta}
-            backLabel={`Back to ${from === 'dashboard' ? 'dashboard' : from === 'inbox' ? 'inbox' : 'records'}`}
+            backLabel={`Back to ${from === 'dashboard' ? 'dashboard' : 'records'}`}
             onBack={() => go(from)}
             onSaved={(r) => {
               setSelected(r)
@@ -188,13 +187,5 @@ function IconRecords() {
   )
 }
 
-function IconMail() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <rect x="1.5" y="3" width="13" height="10" rx="1.4" stroke="currentColor" strokeWidth="1.3" />
-      <path d="m2 4 6 4.5L14 4" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
-    </svg>
-  )
-}
 
 export default App

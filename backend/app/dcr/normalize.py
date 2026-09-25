@@ -98,13 +98,20 @@ def norm_yn(value) -> str | None:
 def parse_financial(value: str | None) -> tuple[float, str | None]:
     """Best-effort amount + currency from the free-text "Financial impact" column.
 
-    Plain numbers are EUR (the tracker's default); "$"/"USD" marks US dollars; text without a
-    number (e.g. "None", "To be determined") is 0.
+    Plain numbers are EUR (the tracker's default); "$"/USD, "£"/GBP and CHF mark other currencies;
+    text without a number (e.g. "None", "To be determined") is 0.
     """
     if not value or value == "N/A":
         return 0.0, None
     text = str(value).strip()
-    currency = "USD" if re.search(r"\$|usd", text, re.I) else "EUR"
+    # A sentence without any currency ("...supplied in November 2025...") holds dates, not an amount
+    has_currency = re.search(r"[€$£]|(?<![a-z])(eur|euro|euros|usd|gbp|chf)(?![a-z])", text, re.I)
+    if not has_currency and len(re.findall(r"[A-Za-z]{2,}", text)) > 3:
+        return 0.0, None
+    currency = next(
+        (code for code, pattern in (("USD", r"\$|(?<![a-z])usd"), ("GBP", r"£|(?<![a-z])gbp"), ("CHF", r"(?<![a-z])chf")) if re.search(pattern, text, re.I)),
+        "EUR",
+    )
     m = re.search(r"\d[\d.,\s]*", text)
     if not m:
         return 0.0, None

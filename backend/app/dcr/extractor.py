@@ -112,8 +112,10 @@ Tracker rules (from the SOP 5-A1 instructions):
 - CAPA needed = Y when the customer requests a CAPA / deviation / investigation report or the issue is
   recurring; N when simple corrective actions close it; empty if unclear.
 - Dates: ISO format (YYYY-MM-DD).
-Threads usually quote earlier messages below the newest one — read all of it. Ignore signatures,
-disclaimers and security-gateway links. Auto-replies, order confirmations, quotes and pure logistics
+You get all e-mails saved for one AMEX project. They may form several threads about the same
+incident (e.g. the customer complaint and the discussion with the supplier): combine them into one
+tracker row. Threads usually quote earlier messages below the newest one — read all of it. Ignore
+signatures, disclaimers and security-gateway links. Order confirmations, quotes and pure logistics
 coordination without a problem are not DCRs (is_dcr = false)."""
 
 
@@ -121,14 +123,19 @@ MAX_THREAD_CHARS = 400_000  # ~100k tokens; real Outlook threads quote up to ~19
 
 
 def thread_text(emails: list[ParsedEmail]) -> str:
-    """Each reply usually quotes the whole history below it. Send the most complete copy once (the
-    longest body) and only the new part of every other e-mail, so long threads stay far below the
-    context limit."""
-    fullest = max(range(len(emails)), key=lambda i: len(emails[i].body))
+    """Each reply usually quotes the whole history below it. Per thread (subject), send the most
+    complete copy once (the longest body) and only the new part of every other e-mail, so long
+    threads stay far below the context limit. A project folder can hold several threads."""
+    fullest: dict[str, int] = {}
+    for i, e in enumerate(emails):
+        j = fullest.get(e.thread_subject)
+        if j is None or len(e.body) > len(emails[j].body):
+            fullest[e.thread_subject] = i
+    complete = set(fullest.values())
     parts = []
     for i, e in enumerate(emails):
-        body = e.body if i == fullest else _newest_part(e.body)
-        note = "" if i == fullest else " (newest part only; the history is in the complete copy)"
+        body = e.body if i in complete else _newest_part(e.body)
+        note = "" if i in complete else " (newest part only; the history is in the complete copy of this thread)"
         att = f"\nAttachments: {', '.join(e.attachments)}" if e.attachments else ""
         parts.append(f"--- E-mail {i + 1}{note} ---\nFrom: {e.sender}\nDate: {e.date}\nSubject: {e.subject}{att}\n\n{body}")
     text = "\n\n".join(parts)

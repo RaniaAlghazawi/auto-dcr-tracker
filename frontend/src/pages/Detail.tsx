@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, type DCR, type DcrPatch, type EditableField, type Meta } from '../api'
 import { EntryFields, entryFields } from '../EntryFields'
-import { BackLink, CriticalBadge, CURRENT_USER, daysOpen, fmtLong, isOpen, show, StatusBadge, TypeBadge } from '../ui'
+import { BackLink, CriticalBadge, daysOpen, fmtLong, isOpen, show, StatusBadge, TypeBadge } from '../ui'
 
 interface Props {
   record: DCR
@@ -15,15 +15,14 @@ const toPatch = (r: DCR, meta: Meta): DcrPatch =>
   Object.fromEntries(entryFields(meta).map((f) => [f.key, r[f.key] ?? ''])) as DcrPatch
 
 export function Detail({ record: r, meta, backLabel, onBack, onSaved }: Props) {
-  const isDraft = r.status === 'Draft'
-  const [editing, setEditing] = useState(isDraft)
+  const [editing, setEditing] = useState(false)
   const [values, setValues] = useState<DcrPatch>(() => toPatch(r, meta))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     setValues(toPatch(r, meta))
-    setEditing(r.status === 'Draft')
+    setEditing(false)
     setError(null)
   }, [r, meta])
 
@@ -47,12 +46,6 @@ export function Detail({ record: r, meta, backLabel, onBack, onSaved }: Props) {
       setBusy(false)
     }
   }
-
-  const confirm = () =>
-    run(async () => {
-      await save()
-      return api.confirm(r.id, values.entered_by || CURRENT_USER.login)
-    })
 
   const days = isOpen(r) ? daysOpen(r) : null
   const fields: { label: string; value: string; wide?: boolean }[] = [
@@ -85,24 +78,17 @@ export function Detail({ record: r, meta, backLabel, onBack, onSaved }: Props) {
     <section className="view">
       <BackLink label={backLabel} onClick={onBack} />
 
-      {isDraft && (
-        <div className="notice">
-          Extracted from {emails} e-mail{emails === 1 ? '' : 's'} by {r.extraction_method === 'claude' ? 'Claude' : 'keyword rules'}.
-          Check the fields, then add it to the Excel tracker — it gets DCR number <b className="mono">{meta.next_tracking_number}</b>.
-        </div>
-      )}
-
       <div className="card">
         <div className="detail-header">
           <div>
-            <div className="detail-header__id mono">{r.tracking_number ?? 'New DCR (draft)'}</div>
+            <div className="detail-header__id mono">{r.tracking_number}</div>
             <div className="detail-header__badges">
               <TypeBadge type={r.type} />
               <CriticalBadge r={r} />
               <StatusBadge r={r} />
               {r.source === 'email' && (
                 <span className={`tag${r.extraction_method === 'claude' ? ' is-ai' : ''}`}>
-                  {r.extraction_method === 'claude' ? 'AI-extracted' : 'Rule-extracted'} · {emails} e-mail{emails === 1 ? '' : 's'}
+                  {r.extraction_method === 'claude' ? 'Filled by AI' : 'Filled by rules'} from {emails} e-mail{emails === 1 ? '' : 's'}
                 </span>
               )}
             </div>
@@ -113,7 +99,7 @@ export function Detail({ record: r, meta, backLabel, onBack, onSaved }: Props) {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            {!isDraft && !editing && (
+            {!editing && (
               <button className="btn-secondary" onClick={() => setEditing(true)}>
                 Edit
               </button>
@@ -126,25 +112,18 @@ export function Detail({ record: r, meta, backLabel, onBack, onSaved }: Props) {
             <EntryFields meta={meta} values={values} onChange={setValues} />
             <div className="form-actions" style={{ borderTop: '1px solid var(--border)' }}>
               {error && <span className="error-note">{error}</span>}
-              {!isDraft && (
-                <button
-                  className="btn-secondary"
-                  onClick={() => {
-                    setValues(toPatch(r, meta))
-                    setEditing(false)
-                  }}
-                >
-                  Cancel
-                </button>
-              )}
-              <button className={isDraft ? 'btn-secondary' : 'btn-primary'} disabled={busy || !changed.length} onClick={() => run(save)}>
-                {isDraft ? 'Save draft' : 'Save to Excel'}
+              <button
+                className="btn-secondary"
+                onClick={() => {
+                  setValues(toPatch(r, meta))
+                  setEditing(false)
+                }}
+              >
+                Cancel
               </button>
-              {isDraft && (
-                <button className="btn-primary" disabled={busy || !values.description} onClick={confirm}>
-                  {busy ? 'Writing to Excel…' : 'Add to Excel tracker'}
-                </button>
-              )}
+              <button className="btn-primary" disabled={busy || !changed.length} onClick={() => run(save)}>
+                {busy ? 'Saving…' : 'Save to Excel'}
+              </button>
             </div>
           </>
         ) : (
