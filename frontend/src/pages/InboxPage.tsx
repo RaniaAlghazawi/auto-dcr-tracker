@@ -81,7 +81,7 @@ export function InboxPage({ meta, onIngested, openDcrById }: Props) {
               />
             </label>
             <span className="ml-auto text-xs text-charcoal/60">
-              Extraction: {meta.extractor === 'claude' ? `Claude (${meta.model})` : 'keyword rules (set ANTHROPIC_API_KEY to use Claude)'}
+              Extraction: {meta.extractor === 'claude' ? `Claude (${meta.model})` : 'keyword rules (set CLAUDE_API_KEY to use Claude)'}
             </span>
           </div>
           {error && <p className="mt-2 text-xs text-oxblood">{error}</p>}

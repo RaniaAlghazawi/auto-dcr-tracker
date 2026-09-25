@@ -16,7 +16,7 @@ forwarders. Claude reads incoming e-mails and fills the SOP 5-A1 tracker workboo
   fills fields that are still empty in a confirmed row; it never overwrites them. Auto-replies and pure
   logistics mails are skipped. With `auto_add=true` the row goes straight into Excel; otherwise it
   waits as a draft until someone confirms it (`POST /api/dcrs/{id}/confirm`).
-- **Without `ANTHROPIC_API_KEY`** (or if a Claude call fails), extraction falls back to keyword rules.
+- **Without `CLAUDE_API_KEY`** (or if a Claude call fails), extraction falls back to keyword rules.
   The rules are much weaker than Claude.
 - **Test e-mails**: `resources/sample_emails/` has 20 synthetic e-mails. They are modelled on real DCR
   threads: 13 incidents, 5 follow-up replies, 1 auto-reply and 1 logistics e-mail. People and suppliers
@@ -25,7 +25,7 @@ forwarders. Claude reads incoming e-mails and fills the SOP 5-A1 tracker workboo
 - **Data-quality checks** (`backend/app/dcr/quality.py`) compare each entry with the tracker's field
   definitions.
 
-Quick start (after the setup steps below): put `ANTHROPIC_API_KEY=...` in `backend/.env`, then run
+Quick start (after the setup steps below): put `CLAUDE_API_KEY=...` in `backend/.env`, then run
 `uvicorn app.main:app --reload` in `backend/` and open http://localhost:8000/docs.
 `POST /api/admin/reset` starts over from the template.
 See [`resources/README.md`](resources/README.md).

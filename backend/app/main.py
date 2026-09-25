@@ -9,13 +9,14 @@ should live in the top-level `/resources` folder and be loaded through
 """
 
 import logging
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")  # backend/.env
 
 from app.dcr.store import store  # noqa: E402  (after load_dotenv so env settings apply)
 from app.routers import dcr, example  # noqa: E402

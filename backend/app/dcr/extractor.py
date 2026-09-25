@@ -2,7 +2,7 @@
 
 Two strategies:
 - "claude": Claude reads the thread with the SOP 5-A1 field definitions and returns structured fields.
-- "rules":  keyword/regex heuristics, used when no ANTHROPIC_API_KEY is configured or Claude fails.
+- "rules":  keyword/regex heuristics, used when no CLAUDE_API_KEY is configured or Claude fails.
 """
 
 import logging
@@ -11,7 +11,7 @@ import re
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.dcr.email_parser import ParsedEmail
 from app.dcr.master_data import MasterData
@@ -22,8 +22,9 @@ log = logging.getLogger(__name__)
 CLAUDE_MODEL = os.getenv("DCR_CLAUDE_MODEL", "claude-opus-5")
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
-DcrType = Literal["Deviation", "Complaint", "Recall", "Safety notice", "Partner issue report"]
+DcrType = Literal["", "Deviation", "Complaint", "Recall", "Safety notice", "Partner issue report"]
 Category = Literal[
+    "",
     "Damaged item",
     "Delayed shipment",
     "Missing item",
@@ -35,46 +36,64 @@ Category = Literal[
     "Adverse event",
     "Partner issue report",
 ]
-Responsible = Literal["AMEX", "Customer", "Freight forwarder", "Supplier", "Warehouse"]
-Office = Literal["Vienna", "Kenya"]
-YN = Literal["Y", "N"]
+Responsible = Literal["", "AMEX", "Customer", "Freight forwarder", "Supplier", "Warehouse"]
+Office = Literal["", "Vienna", "Kenya"]
+YN = Literal["", "Y", "N"]
 
 
 class Extraction(BaseModel):
+    """An empty string means unknown.
+
+    Every field is required and none is nullable: the structured-output API rejects schemas with many
+    optional or union-typed properties ("Schema is too complex"). The validator below fills in blanks
+    for callers that build partial results (the rules fallback).
+    """
+
     is_dcr: bool = Field(
         description="True if the thread reports a deviation, complaint, recall, safety notice or partner issue."
     )
     title: str = Field(description="Short headline, max 80 characters.")
-    type: DcrType | None = None
-    category: Category | None = None
-    critical: YN | None = Field(None, description="Y only for a clear patient-safety / product-integrity risk.")
-    occurred_on: str | None = Field(None, description="ISO date the issue occurred; else the date AMEX became aware.")
-    amex_office: Office | None = Field(None, description="AMEX office impacted: Vienna or Kenya.")
-    pharma: YN | None = Field(None, description="Y if a pharmaceutical product/shipment is involved.")
-    supplier: str | None = Field(None, description="Supplier / manufacturer company name.")
-    customer: str | None = Field(None, description="Customer organisation name only, not the end destination.")
-    project: str | None = Field(None, description="AMEX project number, e.g. 20231687 or 20231789-1.")
-    freight_forwarder: str | None = None
-    reported_by_party: Responsible | None = Field(None, description="Which kind of party raised the issue.")
-    responsible_party: Responsible | None = Field(None, description="Who caused the issue, if the e-mails indicate it.")
-    responsible_party_name: str | None = Field(None, description="Company name of the responsible party.")
+    type: DcrType
+    category: Category
+    critical: YN = Field(description="Y only for a clear patient-safety / product-integrity risk.")
+    occurred_on: str = Field(description="ISO date the issue occurred; else the date AMEX became aware.")
+    amex_office: Office = Field(description="AMEX office impacted: Vienna or Kenya.")
+    pharma: YN = Field(description="Y if a pharmaceutical product/shipment is involved.")
+    supplier: str = Field(description="Supplier / manufacturer company name.")
+    customer: str = Field(description="Customer organisation name only, not the end destination.")
+    project: str = Field(description="AMEX project number, e.g. 20231687 or 20231789-1.")
+    freight_forwarder: str
+    reported_by_party: Responsible = Field(description="Which kind of party raised the issue.")
+    responsible_party: Responsible = Field(description="Who caused the issue, if the e-mails indicate it.")
+    responsible_party_name: str = Field(description="Company name of the responsible party.")
     description: str = Field(
         description="What happened, chronologically, WHAT not WHY. Include items, lot/batch, quantities, refs."
     )
-    root_cause: str | None = Field(None, description="Only if the e-mails state how/why it happened.")
-    financial_impact: str | None = Field(None, description="Amount with currency, only if stated (e.g. '8177 EUR').")
-    actions_taken: str | None = Field(None, description="Actions already taken or agreed in the thread.")
-    capa_needed: YN | None = Field(None, description="Y if the thread asks for a CAPA / investigation report.")
-    closure_date: str | None = Field(None, description="ISO date, only if the thread states the case is closed.")
-    requested_actions: str | None = Field(None, description="What the sender asks AMEX to do.")
-    missing_information: list[str] = Field(default_factory=list, description="Tracker fields the e-mails do not answer.")
+    root_cause: str = Field(description="Only if the e-mails state how/why it happened.")
+    financial_impact: str = Field(description="Amount with currency, only if stated (e.g. '8177 EUR').")
+    actions_taken: str = Field(description="Actions already taken or agreed in the thread.")
+    capa_needed: YN = Field(description="Y if the thread asks for a CAPA / investigation report.")
+    closure_date: str = Field(description="ISO date, only if the thread states the case is closed.")
+    requested_actions: str = Field(description="What the sender asks AMEX to do.")
+    missing_information: list[str] = Field(description="Tracker fields the e-mails do not answer.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_blanks(cls, data):
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        for name, field in cls.model_fields.items():
+            if data.get(name) is None:
+                data[name] = [] if name == "missing_information" else False if field.annotation is bool else ""
+        return data
 
 
 SYSTEM_PROMPT = f"""You are the Quality assistant at AMEX Healthcare (medical supplies and pharmaceuticals for
 humanitarian customers; offices in Vienna and Kenya). You read e-mail threads from customers, suppliers,
 freight forwarders and warehouses and fill one row of the DCR tracker (SOP 5-A1 "DCR Tracker and CAPA
-Overview"). A QA reviewer checks your row, so never invent facts: leave a field null when the e-mails do
-not support it and list it under missing_information.
+Overview"). A QA reviewer checks your row, so never invent facts: when the e-mails do not support a
+field, leave it as an empty string and list it under missing_information.
 
 Tracker rules (from the SOP 5-A1 instructions):
 - Type is one of {DCR_TYPES}.
@@ -85,11 +104,13 @@ Tracker rules (from the SOP 5-A1 instructions):
 - Category is one of {CATEGORIES}. Use "Other" only when nothing else fits.
 - Responsible party is one of {RESPONSIBLE_PARTIES} — who caused the issue, not who reported it.
 - Customer = customer organisation only, not the end destination (put the destination in the description).
+- Name fields (customer, supplier, responsible party name, freight forwarder) hold one organisation name
+  each, no notes or roles. Supplier = the company AMEX bought the goods from.
 - Description explains WHAT happened chronologically, not HOW/WHY. Root cause (how/why) is separate.
 - Critical = Y only for a clear patient-safety or product-integrity risk (recall of affected lots in the
-  field, sterility breach, cold-chain excursion without stability data); otherwise N; null if unclear.
+  field, sterility breach, cold-chain excursion without stability data); otherwise N; empty if unclear.
 - CAPA needed = Y when the customer requests a CAPA / deviation / investigation report or the issue is
-  recurring; N when simple corrective actions close it; null if unclear.
+  recurring; N when simple corrective actions close it; empty if unclear.
 - Dates: ISO format (YYYY-MM-DD).
 Threads usually quote earlier messages below the newest one — read all of it. Ignore signatures,
 disclaimers and security-gateway links. Auto-replies, order confirmations, quotes and pure logistics
@@ -120,7 +141,7 @@ def _master_data_hint(emails: list[ParsedEmail], master: MasterData) -> str:
 def extract_with_claude(emails: list[ParsedEmail], master: MasterData) -> Extraction | None:
     import anthropic
 
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=api_key())
     request = dict(
         model=CLAUDE_MODEL,
         max_tokens=16000,
@@ -259,11 +280,16 @@ def extract_with_rules(emails: list[ParsedEmail], master: MasterData) -> Extract
     return ex
 
 
+def api_key() -> str | None:
+    """CLAUDE_API_KEY from backend/.env; the SDK's own ANTHROPIC_API_KEY also works."""
+    return os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+
+
 def use_claude() -> bool:
     mode = os.getenv("DCR_EXTRACTOR", "auto").lower()
     if mode == "rules":
         return False
-    return mode == "claude" or bool(os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"))
+    return mode == "claude" or bool(api_key())
 
 
 def extract(emails: list[ParsedEmail], master: MasterData) -> tuple[Extraction, str]:
