@@ -1,0 +1,18 @@
+{
+  "_note": "E-mail domain -> known partner. Domains below match the synthetic test e-mails in resources/sample_emails; add real partner domains here once the mailbox tool is connected.",
+  "parties": [
+    {"name": "FHI 360 (GHSC-PSM)", "type": "Customer", "domains": ["fhi360.example"]},
+    {"name": "Plan International Benin", "type": "Customer", "domains": ["plan-international.example"]},
+    {"name": "ICRC", "type": "Customer", "domains": ["icrc.example"]},
+    {"name": "WHO", "type": "Customer", "domains": ["who.example"]},
+    {"name": "UN / MONUSCO", "type": "Customer", "domains": ["un.example"]},
+    {"name": "UNICEF", "type": "Customer", "domains": ["unicef.example"]},
+    {"name": "Chemora Diagnostics Ltd", "type": "Supplier", "domains": ["chemora-diagnostics.example"]},
+    {"name": "Belmont Biopharma NV", "type": "Supplier", "domains": ["belmont-biopharma.example"]},
+    {"name": "Randall Laboratories Ltd", "type": "Supplier", "domains": ["randall-labs.example"]},
+    {"name": "Galena Pharma GmbH", "type": "Supplier", "domains": ["galena-pharma.example"]},
+    {"name": "Ventora Medical Ltd", "type": "Supplier", "domains": ["ventora-medical.example"]},
+    {"name": "Pharmalager Hagenbrunn GmbH", "type": "Warehouse", "domains": ["pharmalager-hagenbrunn.example"]},
+    {"name": "AMEX", "type": "AMEX", "domains": ["amex-healthcare.com"]}
+  ]
+}

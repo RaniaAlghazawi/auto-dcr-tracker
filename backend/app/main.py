@@ -8,15 +8,32 @@ should live in the top-level `/resources` folder and be loaded through
 `app.resources.resource_path()` so the whole team uses one consistent location.
 """
 
+import logging
+from contextlib import asynccontextmanager
+
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import example
+load_dotenv()
+
+from app.dcr.store import store  # noqa: E402  (after load_dotenv so env settings apply)
+from app.routers import dcr, example  # noqa: E402
+
+logging.basicConfig(level=logging.INFO)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    store.load()
+    yield
+
 
 app = FastAPI(
-    title="AMEX Healthcare Hackathon API",
-    description="Starter FastAPI backend for the AMEX Healthcare hackathon template.",
+    title="AMEX Healthcare — Auto DCR Tracker API",
+    description="Tracks Deviations, Complaints and Recalls (SOP 5) and turns incoming e-mails into DCR drafts.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # Allow the local Vite dev server (and any preview host) to call this API.
@@ -29,6 +46,7 @@ app.add_middleware(
 )
 
 app.include_router(example.router)
+app.include_router(dcr.router)
 
 
 @app.get("/health", tags=["system"])

@@ -1,97 +1,132 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import amexLogo from './assets/amex-logo.png'
+import { api, type DCR, type Filters, type Meta } from './api'
+import { DcrDrawer } from './components/DcrDrawer'
+import { Select } from './components/ui'
+import { DashboardPage } from './pages/DashboardPage'
+import { InboxPage } from './pages/InboxPage'
+import { RegisterPage } from './pages/RegisterPage'
 
-type ApiStatus = 'checking' | 'online' | 'offline'
+type Tab = 'dashboard' | 'register' | 'inbox'
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'dashboard', label: 'Dashboard' },
+  { id: 'register', label: 'DCR register' },
+  { id: 'inbox', label: 'E-mail inbox' },
+]
 
 function App() {
-  const [status, setStatus] = useState<ApiStatus>('checking')
-  const [message, setMessage] = useState<string>('')
+  const [meta, setMeta] = useState<Meta | null>(null)
+  const [offline, setOffline] = useState(false)
+  const [tab, setTab] = useState<Tab>('dashboard')
+  // Filters shared by the dashboard and the register
+  const [filters, setFilters] = useState<Filters>({})
+  const [selected, setSelected] = useState<DCR | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
 
-  useEffect(() => {
-    fetch('/api/hello')
-      .then((res) => {
-        if (!res.ok) throw new Error('bad response')
-        return res.json()
-      })
-      .then((data: { message: string }) => {
-        setStatus('online')
-        setMessage(data.message)
-      })
-      .catch(() => setStatus('offline'))
+  const refresh = useCallback(() => {
+    setRefreshKey((k) => k + 1)
+    api.meta().then(setMeta).catch(() => undefined)
   }, [])
 
+  useEffect(() => {
+    api
+      .meta()
+      .then(setMeta)
+      .catch(() => setOffline(true))
+  }, [])
+
+  const openRegister = (f: Filters) => {
+    setFilters({ year: filters.year, office: filters.office, pharma: filters.pharma, ...f })
+    setTab('register')
+  }
+  const openDcrById = (id: string) => api.get(id).then(setSelected).catch(() => undefined)
+
   return (
-    <div className="min-h-screen bg-brand-white text-charcoal">
-      <header className="border-b border-cool-steel/30 bg-brand-white">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-6">
-          <img src={amexLogo} alt="AMEX Healthcare" className="h-8 w-auto" />
-          <span className="font-body text-sm font-medium tracking-wide text-charcoal/70">
-            Hackathon Starter Template
-          </span>
+    <div className="min-h-screen bg-[#f7f7f6] text-charcoal">
+      <header className="border-b border-cool-steel/40 bg-brand-white">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-8 gap-y-3 px-6 py-4">
+          <img src={amexLogo} alt="AMEX Healthcare" className="h-7 w-auto" />
+          <div>
+            <h1 className="text-lg font-normal leading-tight text-charcoal">DCR Tracker</h1>
+            <p className="text-[11px] text-charcoal/60">Deviations · Complaints · Recalls — SOP 5</p>
+          </div>
+          <nav className="ml-auto flex gap-1" aria-label="Sections">
+            {TABS.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium ${
+                  tab === t.id ? 'bg-oxblood text-white' : 'text-charcoal hover:bg-cool-steel/20'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </nav>
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl px-6 py-16">
-        <p className="font-body text-sm font-semibold uppercase tracking-widest text-oxblood">
-          We Care
-        </p>
-        <h1 className="mt-3 max-w-2xl text-4xl font-light leading-tight text-charcoal md:text-5xl">
-          Healthcare support where it matters most.
-        </h1>
-        <p className="mt-6 max-w-xl font-body text-base text-charcoal/80">
-          This is your starting point. Replace this page with your track's UI, wire it up to
-          the FastAPI backend in <code className="rounded bg-cool-steel/20 px-1.5 py-0.5">/backend</code>,
-          and start building.
-        </p>
-
-        <div className="mt-10 flex items-center gap-3 rounded-lg border border-cool-steel/30 bg-white px-5 py-4">
-          <span
-            className={`h-2.5 w-2.5 rounded-full ${
-              status === 'online'
-                ? 'bg-dusty-olive'
-                : status === 'offline'
-                  ? 'bg-oxblood'
-                  : 'bg-air-force-blue'
-            }`}
-          />
-          <div className="font-body text-sm">
-            {status === 'checking' && 'Checking connection to backend…'}
-            {status === 'online' && (
-              <>
-                Backend connected — <span className="text-charcoal/70">{message}</span>
-              </>
+      <main className="mx-auto max-w-7xl px-6 py-6">
+        {offline && (
+          <p className="rounded-md border border-oxblood/40 bg-oxblood/5 px-4 py-3 text-sm">
+            Backend not reachable. Start it with <code>uvicorn app.main:app --reload</code> in <code>/backend</code>.
+          </p>
+        )}
+        {meta && (
+          <>
+            {tab !== 'inbox' && (
+              <div className="mb-6 flex flex-wrap items-end gap-3">
+                <Select
+                  label="Year occurred"
+                  value={filters.year}
+                  onChange={(v) => setFilters({ ...filters, year: v })}
+                  options={[...meta.years].reverse().map(String)}
+                  allLabel="All years"
+                />
+                <Select label="AMEX office" value={filters.office} onChange={(v) => setFilters({ ...filters, office: v })} options={meta.offices} />
+                <Select
+                  label="Pharma"
+                  value={filters.pharma}
+                  onChange={(v) => setFilters({ ...filters, pharma: v })}
+                  options={[
+                    { value: 'Y', label: 'Pharma' },
+                    { value: 'N', label: 'Non-pharma' },
+                  ]}
+                />
+                {tab === 'dashboard' && (
+                  <Select label="Type" value={filters.type} onChange={(v) => setFilters({ ...filters, type: v })} options={meta.types} />
+                )}
+                {Object.values(filters).some(Boolean) && (
+                  <button className="pb-1.5 text-xs font-medium text-oxblood hover:underline" onClick={() => setFilters({})}>
+                    Clear filters
+                  </button>
+                )}
+              </div>
             )}
-            {status === 'offline' && (
-              <>
-                Backend not reachable. Start it with{' '}
-                <code className="rounded bg-cool-steel/20 px-1.5 py-0.5">uvicorn app.main:app --reload</code>{' '}
-                in <code className="rounded bg-cool-steel/20 px-1.5 py-0.5">/backend</code>.
-              </>
-            )}
-          </div>
-        </div>
 
-        <div className="mt-12 grid gap-4 md:grid-cols-3">
-          <div className="rounded-lg border border-cool-steel/30 p-5">
-            <h3 className="text-lg font-medium text-charcoal">1. Read the README</h3>
-            <p className="mt-2 font-body text-sm text-charcoal/70">
-              The root README.md walks you through setup, your track, and submission.
-            </p>
-          </div>
-          <div className="rounded-lg border border-cool-steel/30 p-5">
-            <h3 className="text-lg font-medium text-charcoal">2. Build your track</h3>
-            <p className="mt-2 font-body text-sm text-charcoal/70">
-              Edit this page and add API routes in <code>/backend/app/routers</code>.
-            </p>
-          </div>
-          <div className="rounded-lg border border-cool-steel/30 p-5">
-            <h3 className="text-lg font-medium text-charcoal">3. Add resources</h3>
-            <p className="mt-2 font-body text-sm text-charcoal/70">
-              Put any data files your backend needs in the top-level <code>/resources</code> folder.
-            </p>
-          </div>
-        </div>
+            {tab === 'dashboard' && (
+              <DashboardPage meta={meta} filters={filters} refreshKey={refreshKey} openRegister={openRegister} openDcr={setSelected} />
+            )}
+            {tab === 'register' && (
+              <RegisterPage meta={meta} filters={filters} setFilters={setFilters} refreshKey={refreshKey} openDcr={setSelected} />
+            )}
+            {tab === 'inbox' && <InboxPage meta={meta} onIngested={refresh} openDcrById={openDcrById} />}
+          </>
+        )}
       </main>
+
+      {selected && meta && (
+        <DcrDrawer
+          dcr={selected}
+          meta={meta}
+          onClose={() => setSelected(null)}
+          onSaved={(d) => {
+            setSelected(d)
+            refresh()
+          }}
+        />
+      )}
     </div>
   )
 }

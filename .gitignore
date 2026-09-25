@@ -5,3 +5,7 @@ Thumbs.db
 # Editor
 .vscode/
 .idea/
+
+# Runtime state: working copy of the tracker workbook + drafts/e-mail links
+resources/data/
+resources/output/

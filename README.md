@@ -1,3 +1,37 @@
+# Auto DCR Tracker (Track 7 — Quality)
+
+A Quality tool for **Deviations, Complaints and Recalls (DCR)** from customers, suppliers and freight
+forwarders. Claude reads incoming e-mails and fills the SOP 5-A1 tracker workbook with new rows.
+
+**How it works**
+- **The Excel tracker is the data source.** On first start, `resources/template_SOP.xlsx` is copied to
+  `resources/output/DCR_Tracker.xlsx`. Set `DCR_TRACKER_PATH` to use another tracker. All rows are read
+  from that copy, and new or edited DCRs are written back into its *Main Sheet*
+  (`backend/app/dcr/excel_writer.py`). The writer edits the sheet XML directly, so the logo, drop-down
+  lists, comments, pivot table and SharePoint metadata are kept. The pivot refreshes when the file is
+  opened. Download the filled workbook from `GET /api/tracker.xlsx`.
+- **E-mails → DCR rows.** Post `.eml`, `.msg` (Outlook) or pasted text to `/api/emails`. Claude
+  (`claude-opus-5`, structured output, server-side refusal fallback) extracts the tracker fields.
+  Replies are linked to their case by `In-Reply-To`/`References` or by subject. A follow-up e-mail only
+  fills fields that are still empty in a confirmed row; it never overwrites them. Auto-replies and pure
+  logistics mails are skipped. With `auto_add=true` the row goes straight into Excel; otherwise it
+  waits as a draft until someone confirms it (`POST /api/dcrs/{id}/confirm`).
+- **Without `ANTHROPIC_API_KEY`** (or if a Claude call fails), extraction falls back to keyword rules.
+  The rules are much weaker than Claude.
+- **Test e-mails**: `resources/sample_emails/` has 20 synthetic e-mails. They are modelled on real DCR
+  threads: 13 incidents, 5 follow-up replies, 1 auto-reply and 1 logistics e-mail. People and suppliers
+  are fictional. Regenerate them with `python scripts/make_sample_emails.py`. Run them through the app
+  with `POST /api/emails/samples/{name}`.
+- **Data-quality checks** (`backend/app/dcr/quality.py`) compare each entry with the tracker's field
+  definitions.
+
+Quick start (after the setup steps below): put `ANTHROPIC_API_KEY=...` in `backend/.env`, then run
+`uvicorn app.main:app --reload` in `backend/` and open http://localhost:8000/docs.
+`POST /api/admin/reset` starts over from the template.
+See [`resources/README.md`](resources/README.md).
+
+---
+
 # AMEX Healthcare Hackathon — Starter Template
 
 Welcome! This repository is your starting point for the AMEX Healthcare Hackathon.
