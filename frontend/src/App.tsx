@@ -5,26 +5,32 @@ import { Detail } from './pages/Detail'
 import { Inbox } from './pages/Inbox'
 import { NewEntry } from './pages/NewEntry'
 import { Records } from './pages/Records'
+import { Wizard, WizardWorking, WizardNotADCR } from './pages/Wizard'
 import { CURRENT_USER } from './ui'
 
-type View = 'dashboard' | 'records' | 'inbox' | 'detail' | 'new'
+type View = 'dashboard' | 'records' | 'inbox' | 'detail' | 'new' | 'wizard' | 'wizard-working' | 'wizard-not-dcr'
 type ListView = 'dashboard' | 'records' | 'inbox'
 const LIST_VIEWS: ListView[] = ['dashboard', 'records', 'inbox']
 
 /** Section from the URL hash (#records, #inbox), so reloads and browser back keep the section. */
-const viewFromHash = (): ListView => {
-  const h = window.location.hash.slice(1) as ListView
-  return LIST_VIEWS.includes(h) ? h : 'dashboard'
+const viewFromHash = (): View => {
+  const h = window.location.hash.slice(1)
+  if (h.startsWith('wizard/working/')) return 'wizard-working'
+  if (h.startsWith('wizard/not-a-dcr/')) return 'wizard-not-dcr'
+  if (h === 'wizard') return 'wizard'
+  const listView = h as ListView
+  return LIST_VIEWS.includes(listView) ? listView : 'dashboard'
 }
 
 function App() {
   const [meta, setMeta] = useState<Meta | null>(null)
   const [offline, setOffline] = useState<string | null>(null)
   const [view, setView] = useState<View>(viewFromHash)
-  const [from, setFrom] = useState<ListView>(viewFromHash) // where "back" goes from detail
+  const [from, setFrom] = useState<ListView>('dashboard') // where "back" goes from detail
   const [selected, setSelected] = useState<DCR | null>(null)
   const [filters, setFilters] = useState<RecordFilters>({})
   const [refreshKey, setRefreshKey] = useState(0)
+  const [wizardProject, setWizardProject] = useState<string | null>(null)
 
   const refresh = useCallback(() => {
     api
@@ -44,6 +50,17 @@ function App() {
       const v = viewFromHash()
       setFrom(v)
       setView(v)
+
+      // Extract project from wizard URLs
+      if (v === 'wizard-working') {
+        const match = window.location.hash.match(/wizard\/working\/(.+)/)
+        setWizardProject(match ? match[1] : null)
+      } else if (v === 'wizard-not-dcr') {
+        const match = window.location.hash.match(/wizard\/not-a-dcr\/(.+)/)
+        setWizardProject(match ? match[1] : null)
+      } else {
+        setWizardProject(null)
+      }
     }
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
@@ -69,13 +86,16 @@ function App() {
     inbox: ['E-mail inbox', 'AI reads incoming e-mails and fills new rows of the DCR tracker'],
     detail: [selected?.status === 'Draft' ? 'Review draft' : 'Record detail', 'Full record view'],
     new: ['New DCR entry', 'Fill in the fields below, then save'],
+    wizard: ['New DCR from project', 'Read project emails and auto-fill the entry'],
+    'wizard-working': ['Reading project', 'Processing emails'],
+    'wizard-not-dcr': ['No quality issue found', 'Project does not contain a DCR'],
   }
   const nav: { id: ListView; label: string; icon: ReactNode; count?: number }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: <IconDashboard /> },
     { id: 'records', label: 'Records', icon: <IconRecords /> },
     { id: 'inbox', label: 'E-mail inbox', icon: <IconMail />, count: meta?.draft_count || undefined },
   ]
-  const active: ListView = view === 'detail' || view === 'new' ? from : view
+  const active: ListView = (view === 'detail' || view === 'new' || view.startsWith('wizard')) ? from : view
 
   return (
     <div className="app-shell">
@@ -110,11 +130,17 @@ function App() {
             <div className="topbar__meta">{titles[view][1]}</div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <button className="btn-primary" onClick={() => go('new')} disabled={!meta}>
+            <button className="btn-secondary" onClick={() => go('wizard')} disabled={!meta} title="Read project emails and auto-fill">
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                 <path d="M8 2.5v11M2.5 8h11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
               </svg>
-              New entry
+              From project
+            </button>
+            <button className="btn-primary" onClick={() => go('new')} disabled={!meta} title="Manual entry">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M8 2.5v11M2.5 8h11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+              </svg>
+              Manual entry
             </button>
             <div className="account" title={CURRENT_USER.email}>
               <div className="account__avatar">{CURRENT_USER.initials}</div>
@@ -160,6 +186,33 @@ function App() {
             onCreated={(r) => {
               refresh()
               openDetail(r)
+            }}
+          />
+        )}
+        {meta && view === 'wizard' && (
+          <Wizard
+            onCancel={() => go(from)}
+            onCreated={(id) => {
+              refresh()
+              openById(id)
+            }}
+          />
+        )}
+        {meta && view === 'wizard-working' && wizardProject && (
+          <WizardWorking
+            project={wizardProject}
+            onCancel={() => go(from)}
+          />
+        )}
+        {meta && view === 'wizard-not-dcr' && wizardProject && (
+          <WizardNotADCR
+            project={wizardProject}
+            onCancel={() => go(from)}
+            onCreateAnyway={() => {
+              api.wizardBlank(wizardProject).then(result => {
+                refresh()
+                openById(result.id)
+              })
             }}
           />
         )}

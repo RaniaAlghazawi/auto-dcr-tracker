@@ -190,4 +190,12 @@ export const api = {
   ignored: () => fetch('/api/emails/ignored').then((r) => json<IgnoredEmail[]>(r)),
   reload: () => post('/api/admin/reload').then((r) => json<{ records: number }>(r)),
   reset: () => post('/api/admin/reset').then((r) => json<{ records: number }>(r)),
+
+  // Wizard API
+  wizardStart: () => fetch('/api/wizard').then((r) => json(r)),
+  wizardSubmit: (project: string, force: boolean) => post('/api/wizard', { project, force }).then((r) => json(r)),
+  wizardWorking: (project: string) => fetch(`/api/wizard/working/${project}`).then((r) => json(r)),
+  wizardWorkingStatus: (project: string) => fetch(`/api/wizard/working/${project}/status`).then((r) => json(r)),
+  wizardNotADCR: (project: string) => fetch(`/api/wizard/not-a-dcr/${project}`).then((r) => json(r)),
+  wizardBlank: (project: string) => post(`/api/wizard/blank/${project}`).then((r) => json(r)),
 }
