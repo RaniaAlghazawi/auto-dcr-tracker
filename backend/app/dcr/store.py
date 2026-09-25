@@ -10,6 +10,7 @@
 import json
 import logging
 import os
+import re
 import threading
 from datetime import date
 from pathlib import Path
@@ -28,7 +29,10 @@ log = logging.getLogger(__name__)
 TEMPLATE_PATH = resource_path("template_SOP.xlsx")
 TRACKER_PATH = Path(os.getenv("DCR_TRACKER_PATH") or resource_path("output", "DCR_Tracker.xlsx"))
 STATE_PATH = resource_path("data", "dcr_state.json")
-SAMPLE_EMAILS_DIR = resource_path("sample_emails")
+RESOURCES_DIR = resource_path()
+EMAIL_SUFFIXES = (".eml", ".msg")
+# runtime folders under resources/ that never hold input e-mails
+SKIP_DIRS = {"data", "output", "master_data"}
 
 # Extracted fields a follow-up e-mail may fill in on an already confirmed DCR (never overwrites)
 FILLABLE = [
@@ -36,6 +40,7 @@ FILLABLE = [
     "project", "responsible_party", "responsible_party_name", "description", "root_cause",
     "financial_impact", "actions_taken", "capa_needed", "closure_date",
 ]
+AUTO_REPLY = re.compile(r"^\s*(automatic reply|automatische antwort|out of office|abwesenheit|réponse automatique)\b", re.I)
 EMAIL_META = ["source_emails", "extraction_method", "reported_by_party", "freight_forwarder", "requested_actions"]
 
 
@@ -109,9 +114,12 @@ class Store:
         return f"{yy}-{(max(numbers) + 1 if numbers else 1):03d}"
 
     def sample_emails(self) -> list[Path]:
-        if not SAMPLE_EMAILS_DIR.exists():
-            return []
-        return sorted(p for p in SAMPLE_EMAILS_DIR.iterdir() if p.suffix.lower() in (".eml", ".msg", ".txt"))
+        """Every .eml/.msg under resources/ (test e-mails and the real e-mail folders)."""
+        return sorted(
+            p for p in RESOURCES_DIR.rglob("*")
+            if p.suffix.lower() in EMAIL_SUFFIXES and p.is_file()
+            and p.relative_to(RESOURCES_DIR).parts[0] not in SKIP_DIRS
+        )
 
     # ------------------------------------------------------------ Excel
     def _write(self, rec: DCR) -> None:
@@ -149,6 +157,15 @@ class Store:
             known |= {m["message_id"] for m in self.ignored_emails}
             if email.message_id in known:
                 return {"result": "duplicate", "subject": email.subject}
+
+            if AUTO_REPLY.match(email.subject):
+                # out-of-office replies are never DCR evidence — don't attach them to a case either
+                self.ignored_emails.append(
+                    {"message_id": email.message_id, "sender": email.sender, "subject": email.subject,
+                     "date": email.date, "method": "auto-reply"}
+                )
+                self.save_state()
+                return {"result": "not_dcr", "subject": email.subject, "method": "auto-reply"}
 
             existing = self._find_thread(email)
             thread = [_to_parsed(s) for s in existing.source_emails] + [email] if existing else [email]

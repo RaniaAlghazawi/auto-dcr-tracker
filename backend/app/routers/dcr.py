@@ -12,7 +12,7 @@ from app.dcr.excel_writer import WorkbookLockedError
 from app.dcr.extractor import CLAUDE_MODEL, use_claude
 from app.dcr.normalize import parse_financial, parse_iso
 from app.dcr.schema import CATEGORIES, DCR, DCR_TYPES, OFFICES, RESPONSIBLE_PARTIES, DCRUpdate
-from app.dcr.store import TRACKER_PATH, store
+from app.dcr.store import RESOURCES_DIR, TRACKER_PATH, store
 
 router = APIRouter(prefix="/api", tags=["dcr"])
 
@@ -251,24 +251,39 @@ async def upload_emails(
     return [{"file": f.filename, **_ingest(await f.read(), auto_add, entered_by)} for f in files]
 
 
+def _sample_name(p) -> str:
+    return p.relative_to(RESOURCES_DIR).as_posix()
+
+
 @router.get("/emails/samples")
 def list_samples() -> list[dict]:
+    """E-mail files under resources/, oldest first so replies join the case their thread started."""
     known = {e.message_id for r in store.all() for e in r.source_emails}
     known |= {m["message_id"] for m in store.ignored_emails}
     out = []
     for p in store.sample_emails():
-        e = parse_any(p.read_bytes())
-        out.append({"name": p.name, "subject": e.subject, "sender": e.sender, "date": e.date,
+        name = _sample_name(p)
+        try:
+            e = parse_any(p.read_bytes())
+        except Exception:  # e.g. a corrupt .msg
+            out.append({"name": name, "subject": p.stem, "sender": "", "date": None, "processed": False, "error": "unreadable file"})
+            continue
+        out.append({"name": name, "subject": e.subject, "sender": e.sender, "date": e.date,
                     "processed": e.message_id in known})
-    return out
+    return sorted(out, key=lambda x: (x["date"] or "", x["name"]))
 
 
-@router.post("/emails/samples/{name}")
+@router.post("/emails/samples/{name:path}")
 def ingest_sample(name: str, auto_add: bool = False, entered_by: str | None = None) -> dict:
-    path = next((p for p in store.sample_emails() if p.name == name), None)
+    path = next((p for p in store.sample_emails() if _sample_name(p) == name), None)
     if not path:
-        raise HTTPException(404, f"Sample '{name}' not found")
-    return {"file": name, **_ingest(path.read_bytes(), auto_add, entered_by)}
+        raise HTTPException(404, f"E-mail file '{name}' not found")
+    try:
+        return {"file": name, **_ingest(path.read_bytes(), auto_add, entered_by)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(422, f"Could not read '{name}': {e}")
 
 
 @router.get("/emails/ignored")

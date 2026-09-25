@@ -117,12 +117,26 @@ disclaimers and security-gateway links. Auto-replies, order confirmations, quote
 coordination without a problem are not DCRs (is_dcr = false)."""
 
 
+MAX_THREAD_CHARS = 400_000  # ~100k tokens; real Outlook threads quote up to ~190k characters per reply
+
+
 def thread_text(emails: list[ParsedEmail]) -> str:
+    """Each reply usually quotes the whole history below it. Send the most complete copy once (the
+    longest body) and only the new part of every other e-mail, so long threads stay far below the
+    context limit."""
+    fullest = max(range(len(emails)), key=lambda i: len(emails[i].body))
     parts = []
-    for i, e in enumerate(emails, 1):
+    for i, e in enumerate(emails):
+        body = e.body if i == fullest else _newest_part(e.body)
+        note = "" if i == fullest else " (newest part only; the history is in the complete copy)"
         att = f"\nAttachments: {', '.join(e.attachments)}" if e.attachments else ""
-        parts.append(f"--- E-mail {i} ---\nFrom: {e.sender}\nDate: {e.date}\nSubject: {e.subject}{att}\n\n{e.body}")
-    return "\n\n".join(parts)
+        parts.append(f"--- E-mail {i + 1}{note} ---\nFrom: {e.sender}\nDate: {e.date}\nSubject: {e.subject}{att}\n\n{body}")
+    text = "\n\n".join(parts)
+    if len(text) > MAX_THREAD_CHARS:
+        # keep the newest messages (top) and the original report (bottom of the quoted history)
+        head, tail = MAX_THREAD_CHARS * 2 // 3, MAX_THREAD_CHARS // 3
+        text = text[:head] + "\n\n[... middle of the thread omitted for length ...]\n\n" + text[-tail:]
+    return text
 
 
 def _master_data_hint(emails: list[ParsedEmail], master: MasterData) -> str:
@@ -196,8 +210,8 @@ def find_projects(text: str) -> list[str]:
 
 
 def _newest_part(body: str) -> str:
-    """The newest message only — cut the quoted history below it."""
-    return re.split(r"\n(?:From|Von|От|De):\s", body, maxsplit=1)[0]
+    """The newest message only — cut the quoted history below it (English/German/Russian/French headers)."""
+    return re.split(r"\n\s*(?:From|Von|От|De):\s", body, maxsplit=1)[0]
 
 
 def _description(emails: list[ParsedEmail]) -> str:

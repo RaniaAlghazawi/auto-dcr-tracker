@@ -141,10 +141,10 @@ export function Inbox({ meta, refreshKey, onChanged, openDetail, openById }: Pro
             <div className="table-card__head">
               <div>
                 <div className="section-title" style={{ margin: 0 }}>
-                  Test e-mails
+                  E-mail files
                 </div>
                 <span className="chart-card__sub" style={{ margin: 0 }}>
-                  {samples.length} in resources/sample_emails · {unprocessed} not analysed yet
+                  {samples.length} e-mail files in resources/ · {unprocessed} not analysed yet
                 </span>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
