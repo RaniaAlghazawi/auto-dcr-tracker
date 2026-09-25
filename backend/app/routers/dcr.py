@@ -1,4 +1,4 @@
-"""DCR tracker API: dashboard, records, project e-mail reading and the Excel tracker download."""
+"""DCR tracker API: dashboard, records, drafts and the Excel tracker download."""
 
 from collections import Counter
 from datetime import date
@@ -11,7 +11,6 @@ from app.dcr.excel_writer import WorkbookLockedError
 from app.dcr.extractor import CLAUDE_MODEL, use_claude
 from app.dcr.normalize import parse_financial, parse_iso
 from app.dcr.schema import CATEGORIES, DCR, DCR_TYPES, OFFICES, RESPONSIBLE_PARTIES, DCRUpdate
-from app.dcr.project_emails import list_projects
 from app.dcr.store import TRACKER_PATH, store
 
 router = APIRouter(prefix="/api", tags=["dcr"])
@@ -19,6 +18,11 @@ router = APIRouter(prefix="/api", tags=["dcr"])
 
 def _locked(e: WorkbookLockedError) -> HTTPException:
     return HTTPException(409, str(e))
+
+
+def _confirmed() -> list[DCR]:
+    """Entries in the Excel tracker; drafts from the wizard are not counted until confirmed."""
+    return [r for r in store.all() if r.status != "Draft"]
 
 
 def _sort_newest(records: list[DCR]) -> list[DCR]:
@@ -30,7 +34,7 @@ def _sort_newest(records: list[DCR]) -> list[DCR]:
 
 @router.get("/meta")
 def meta() -> dict:
-    confirmed = store.all()
+    confirmed = _confirmed()
     # one entry per customer regardless of spelling case ("Chemonics" / "CHEMONICS"); most frequent spelling wins
     spellings = Counter(r.customer.strip() for r in confirmed if r.customer and r.customer != "N/A")
     by_key: dict[str, str] = {}
@@ -44,6 +48,7 @@ def meta() -> dict:
         "offices": OFFICES,
         "customers": customers,
         "record_count": len(confirmed),
+        "draft_count": sum(r.status == "Draft" for r in store.all()),
         "next_tracking_number": store.next_tracking_number(),
         "tracker_file": TRACKER_PATH.name,
         "extractor": "claude" if use_claude() else "rules",
@@ -85,7 +90,7 @@ def _top_open_by(records: list[DCR], field: str) -> list[dict]:
 @router.get("/dashboard")
 def dashboard(year: int | None = None) -> dict:
     """KPIs cover the whole tracker; the charts follow the optional `year` filter (year occurred)."""
-    recs = store.all()
+    recs = _confirmed()
     today = date.today()
     open_recs = [r for r in recs if r.status == "Open"]
 
@@ -109,6 +114,7 @@ def dashboard(year: int | None = None) -> dict:
             "financial_ytd_eur": round(ytd_eur, 2),
             "critical_open": sum(r.critical == "Y" for r in open_recs),
             "capa_pending": sum(r.capa_needed == "Y" for r in open_recs),
+            "drafts": sum(r.status == "Draft" for r in store.all()),
         },
         "by_type": [{"name": t, "count": by_type.get(t, 0)} for t in DCR_TYPES],
         "by_category": [{"name": k, "count": v} for k, v in by_category.most_common(TOP_N)],
@@ -187,23 +193,14 @@ def _clean(update: BaseModel) -> dict:
     }
 
 
-class NewEntry(DCRUpdate):
-    source_project: str | None = None  # project folder whose e-mails were read for this entry
-    extraction_method: str | None = None
-    requested_actions: str | None = None
-    reported_by_party: str | None = None
-
-
 @router.post("/dcrs", response_model=DCR)
-def create_dcr(entry: NewEntry) -> DCR:
-    """New entry: gets the next DCR number and is written to the Excel tracker."""
+def create_dcr(entry: DCRUpdate) -> DCR:
+    """Manual entry: gets the next DCR number and is written to the Excel tracker."""
     values = _clean(entry)
-    source_project = values.pop("source_project", None)
-    email_meta = {k: values.pop(k, None) for k in ("extraction_method", "requested_actions", "reported_by_party")}
     if not values.get("description"):
         raise HTTPException(400, "Description of the issue is required")
     try:
-        return store.create(values, source_project=source_project, email_meta=email_meta)
+        return store.create(values)
     except WorkbookLockedError as e:
         raise _locked(e)
 
@@ -218,26 +215,19 @@ def update_dcr(dcr_id: str, update: DCRUpdate) -> DCR:
         raise _locked(e)
 
 
-# ---------------------------------------------------------------- project e-mails
+class ConfirmRequest(BaseModel):
+    entered_by: str | None = None
 
 
-@router.get("/projects")
-def projects() -> list[dict]:
-    """Project folders in resources/ that contain e-mails."""
-    return list_projects()
-
-
-@router.post("/projects/{project}/read")
-def read_project(project: str) -> dict:
-    """Read all e-mails saved for the project and propose the tracker fields for a new entry."""
-    if not project.strip():
-        raise HTTPException(400, "Project number is required")
-    result = store.read_project(project.strip())
-    if not result["folders"]:
-        raise HTTPException(404, f"No e-mail folder for project {project} in resources/ (expected resources/{project}/)")
-    if not result["emails"]:
-        raise HTTPException(422, f"The folder for project {project} has no readable e-mails")
-    return result
+@router.post("/dcrs/{dcr_id}/confirm", response_model=DCR)
+def confirm_dcr(dcr_id: str, body: ConfirmRequest) -> DCR:
+    """Accept a draft (e.g. filled by the "From project" wizard): next DCR number + new Excel row."""
+    if not store.get(dcr_id):
+        raise HTTPException(404, f"DCR {dcr_id} not found")
+    try:
+        return store.confirm(dcr_id, body.entered_by)
+    except WorkbookLockedError as e:
+        raise _locked(e)
 
 
 # ---------------------------------------------------------------- admin
@@ -247,11 +237,11 @@ def read_project(project: str) -> dict:
 def reload() -> dict:
     """Re-read the Excel tracker (e.g. after it was edited in Excel)."""
     store.load()
-    return {"records": len(store.all())}
+    return {"records": len(_confirmed())}
 
 
 @router.post("/admin/reset")
 def reset() -> dict:
-    """Fresh copy of the template workbook; drops the e-mail links."""
+    """Fresh copy of the template workbook; drops drafts and e-mail links."""
     store.reset()
-    return {"records": len(store.all())}
+    return {"records": len(_confirmed())}

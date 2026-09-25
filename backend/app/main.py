@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")  # backend/.env
 
 from app.dcr.store import store  # noqa: E402  (after load_dotenv so env settings apply)
-from app.routers import dcr, example  # noqa: E402
+from app.routers import dcr, example, wizard  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 
@@ -48,6 +48,7 @@ app.add_middleware(
 
 app.include_router(example.router)
 app.include_router(dcr.router)
+app.include_router(wizard.router)
 
 
 @app.get("/health", tags=["system"])

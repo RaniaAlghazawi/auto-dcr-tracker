@@ -65,6 +65,13 @@ export function TypeBadge({ type }: { type: string | null }) {
 }
 
 export function StatusBadge({ r }: { r: DCR }) {
+  if (r.status === 'Draft')
+    return (
+      <span className="badge">
+        <span className="dot" style={{ background: 'var(--warning)' }} />
+        Awaiting review
+      </span>
+    )
   if (isOpen(r))
     return (
       <span className="badge">

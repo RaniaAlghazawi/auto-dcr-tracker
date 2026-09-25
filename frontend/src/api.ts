@@ -1,4 +1,4 @@
-export type DcrStatus = 'Open' | 'Closed'
+export type DcrStatus = 'Draft' | 'Open' | 'Closed'
 
 export interface SourceEmail {
   message_id: string
@@ -103,32 +103,47 @@ export interface RecordFilters {
   financial_year?: string
 }
 
-export interface ProjectFolder {
+// ---- "From project" wizard (backend/app/routers/wizard.py)
+export interface WizardProject {
+  number: string
+  status: 'new' | 'draft' | 'recorded'
+  dcr_number: string | null
+}
+export interface WizardStart {
+  suggestions: WizardProject[]
+  engine: string
+  pending_drafts: number
+}
+export interface WizardSubmitResult {
+  result: 'started' | 'created' | 'drafted' | 'existing_draft' | 'existing_record'
+  id?: string
+  dcr_id?: string
+  message?: string
+  project?: string
+}
+export interface WizardWorkingInfo {
   project: string
-  folder: string
+  info: { email_count: number; thread_count: number; parties: { name: string; count: number }[] }
+  engine: string
+  pending_drafts: number
+}
+export interface WizardStatus {
+  running: boolean
+  done: number
+  total: number
+  current: string
+  engine: string
+  percent: number
+  outcome?: string | null
+  reason?: string | null
+  next_url?: string
+}
+export interface WizardNotADCRInfo {
+  project: string
+  reason: string
+  summary: string
   emails: number
-}
-
-/** What Claude read from a project's e-mail folder (nothing is saved yet). */
-export interface ProjectReading {
-  project: string
-  folders: string[]
-  emails: { subject: string; sender: string; date: string | null; attachments: string[] }[]
-  skipped: { file: string; reason: string }[]
-  fields: DcrPatch
-  method: 'claude' | 'rules' | null
-  is_dcr: boolean | null
-  title?: string
-  requested_actions?: string | null
-  reported_by_party?: string | null
-  missing_information: string[]
-}
-
-export type NewEntryPayload = DcrPatch & {
-  source_project?: string
-  extraction_method?: string | null
-  requested_actions?: string | null
-  reported_by_party?: string | null
+  pending_drafts: number
 }
 
 function query(params: Record<string, string | boolean | undefined>): string {
@@ -164,18 +179,27 @@ export const api = {
   dashboard: (year?: number | null) => fetch(`/api/dashboard${query({ year: year ? String(year) : undefined })}`).then((r) => json<Dashboard>(r)),
   list: (f: RecordFilters) => fetch(`/api/dcrs${query({ ...f })}`).then((r) => json<DCR[]>(r)),
   get: (id: string) => fetch(`/api/dcrs/${encodeURIComponent(id)}`).then((r) => json<DCR>(r)),
-  create: (values: NewEntryPayload) => post('/api/dcrs', values).then((r) => json<DCR>(r)),
+  create: (values: DcrPatch) => post('/api/dcrs', values).then((r) => json<DCR>(r)),
   update: (id: string, patch: DcrPatch) =>
     fetch(`/api/dcrs/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     }).then((r) => json<DCR>(r)),
+  /** Accept a draft (e.g. from the wizard): next DCR number + new row in the Excel tracker. */
+  confirm: (id: string, entered_by: string) =>
+    post(`/api/dcrs/${encodeURIComponent(id)}/confirm`, { entered_by }).then((r) => json<DCR>(r)),
   trackerUrl: '/api/tracker.xlsx',
 
-  projects: () => fetch('/api/projects').then((r) => json<ProjectFolder[]>(r)),
-  readProject: (project: string) =>
-    post(`/api/projects/${encodeURIComponent(project)}/read`).then((r) => json<ProjectReading>(r)),
   reload: () => post('/api/admin/reload').then((r) => json<{ records: number }>(r)),
   reset: () => post('/api/admin/reset').then((r) => json<{ records: number }>(r)),
+
+  // Wizard API
+  wizardStart: () => fetch('/api/wizard/').then((r) => json<WizardStart>(r)),
+  wizardSubmit: (project: string, force: boolean) => post('/api/wizard/', { project, force }).then((r) => json<WizardSubmitResult>(r)),
+  wizardWorking: (project: string) => fetch(`/api/wizard/working/${encodeURIComponent(project)}`).then((r) => json<WizardWorkingInfo>(r)),
+  wizardWorkingStatus: (project: string) =>
+    fetch(`/api/wizard/working/${encodeURIComponent(project)}/status`).then((r) => json<WizardStatus>(r)),
+  wizardNotADCR: (project: string) => fetch(`/api/wizard/not-a-dcr/${encodeURIComponent(project)}`).then((r) => json<WizardNotADCRInfo>(r)),
+  wizardBlank: (project: string) => post(`/api/wizard/blank/${encodeURIComponent(project)}`).then((r) => json<{ result: string; id: string; message: string }>(r)),
 }

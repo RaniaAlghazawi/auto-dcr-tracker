@@ -4,26 +4,40 @@ import { Dashboard } from './pages/Dashboard'
 import { Detail } from './pages/Detail'
 import { NewEntry } from './pages/NewEntry'
 import { Records } from './pages/Records'
+import { Wizard, WizardWorking, WizardNotADCR } from './pages/Wizard'
 import { CURRENT_USER } from './ui'
 
-type View = 'dashboard' | 'records' | 'detail' | 'new'
+type View = 'dashboard' | 'records' | 'detail' | 'new' | 'wizard' | 'wizard-working' | 'wizard-not-dcr'
 type ListView = 'dashboard' | 'records'
 const LIST_VIEWS: ListView[] = ['dashboard', 'records']
 
-/** Section from the URL hash (#dashboard, #records), so reloads and browser back keep the section. */
-const viewFromHash = (): ListView => {
-  const h = window.location.hash.slice(1) as ListView
-  return LIST_VIEWS.includes(h) ? h : 'dashboard'
+/** View from the URL hash (#records, #wizard, #wizard/working/<project>), so reloads and browser back keep it. */
+const viewFromHash = (): View => {
+  const h = window.location.hash.slice(1)
+  if (h.startsWith('wizard/working/')) return 'wizard-working'
+  if (h.startsWith('wizard/not-a-dcr/')) return 'wizard-not-dcr'
+  if (h === 'wizard') return 'wizard'
+  const listView = h as ListView
+  return LIST_VIEWS.includes(listView) ? listView : 'dashboard'
 }
+
+/** Project number in #wizard/working/<project> or #wizard/not-a-dcr/<project>. */
+const wizardProjectFromHash = (): string | null => {
+  const m = window.location.hash.match(/^#wizard\/(?:working|not-a-dcr)\/(.+)$/)
+  return m ? decodeURIComponent(m[1]) : null
+}
+
+const listViewOf = (v: View): ListView | null => (LIST_VIEWS.includes(v as ListView) ? (v as ListView) : null)
 
 function App() {
   const [meta, setMeta] = useState<Meta | null>(null)
   const [offline, setOffline] = useState<string | null>(null)
   const [view, setView] = useState<View>(viewFromHash)
-  const [from, setFrom] = useState<ListView>(viewFromHash) // where "back" goes from detail
+  const [from, setFrom] = useState<ListView>(() => listViewOf(viewFromHash()) ?? 'dashboard') // where "back" goes
   const [selected, setSelected] = useState<DCR | null>(null)
   const [filters, setFilters] = useState<RecordFilters>({})
   const [refreshKey, setRefreshKey] = useState(0)
+  const [wizardProject, setWizardProject] = useState<string | null>(wizardProjectFromHash)
 
   const refresh = useCallback(() => {
     api
@@ -41,18 +55,20 @@ function App() {
   useEffect(() => {
     const onHash = () => {
       const v = viewFromHash()
-      setFrom(v)
+      const list = listViewOf(v)
+      if (list) setFrom(list)
       setView(v)
+      setWizardProject(wizardProjectFromHash())
     }
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
   const go = (v: View) => {
-    if (v === 'dashboard' || v === 'records') {
-      setFrom(v)
-      if (window.location.hash !== '#' + v) window.history.pushState(null, '', '#' + v)
-    }
+    const list = listViewOf(v)
+    if (list) setFrom(list)
+    const hash = list ?? (v === 'wizard' ? 'wizard' : null)
+    if (hash && window.location.hash !== '#' + hash) window.history.pushState(null, '', '#' + hash)
     setView(v)
     window.scrollTo(0, 0)
   }
@@ -60,18 +76,22 @@ function App() {
     setSelected(r)
     go('detail')
   }
+  const openById = (id: string) => api.get(id).then(openDetail).catch(() => undefined)
 
   const titles: Record<View, [string, string]> = {
     dashboard: ['Overview', meta ? `${meta.record_count} records · Vienna & Kenya offices · ${meta.tracker_file}` : ''],
     records: ['Records', 'Filter, sort and open any Deviation, Complaint, Recall, Safety Notice or Partner Issue Report'],
-    detail: ['Record detail', 'Full record view'],
-    new: ['New DCR entry', 'Enter the project number to fill the entry from its e-mails, check the fields, then save'],
+    detail: [selected?.status === 'Draft' ? 'Review draft' : 'Record detail', 'Full record view'],
+    new: ['New DCR entry', 'Fill in the fields below, then save'],
+    wizard: ['New DCR from project', 'Read project emails and auto-fill the entry'],
+    'wizard-working': ['Reading project', 'Processing emails'],
+    'wizard-not-dcr': ['No quality issue found', 'Project does not contain a DCR'],
   }
   const nav: { id: ListView; label: string; icon: ReactNode }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: <IconDashboard /> },
     { id: 'records', label: 'Records', icon: <IconRecords /> },
   ]
-  const active: ListView = view === 'detail' || view === 'new' ? from : view
+  const active: ListView = listViewOf(view) ?? from
 
   return (
     <div className="app-shell">
@@ -105,11 +125,17 @@ function App() {
             <div className="topbar__meta">{titles[view][1]}</div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <button className="btn-primary" onClick={() => go('new')} disabled={!meta}>
+            <button className="btn-secondary" onClick={() => go('wizard')} disabled={!meta} title="Read project emails and auto-fill">
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                 <path d="M8 2.5v11M2.5 8h11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
               </svg>
-              New entry
+              From project
+            </button>
+            <button className="btn-primary" onClick={() => go('new')} disabled={!meta} title="Manual entry">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M8 2.5v11M2.5 8h11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+              </svg>
+              Manual entry
             </button>
             <div className="account" title={CURRENT_USER.email}>
               <div className="account__avatar">{CURRENT_USER.initials}</div>
@@ -162,6 +188,42 @@ function App() {
             }}
           />
         )}
+        {meta && view === 'wizard' && (
+          <Wizard
+            onCancel={() => go(from)}
+            onCreated={(id) => {
+              refresh()
+              openById(id)
+            }}
+          />
+        )}
+        {meta && view === 'wizard-working' && wizardProject && (
+          <WizardWorking
+            project={wizardProject}
+            onCancel={() => go(from)}
+            onDone={(id) => {
+              // leave #wizard/working/... so a reload doesn't re-open the progress page
+              window.history.replaceState(null, '', '#' + from)
+              refresh()
+              openById(id)
+            }}
+            onNotADCR={() => {
+              window.location.hash = `#wizard/not-a-dcr/${encodeURIComponent(wizardProject)}`
+            }}
+          />
+        )}
+        {meta && view === 'wizard-not-dcr' && wizardProject && (
+          <WizardNotADCR
+            project={wizardProject}
+            onCancel={() => go(from)}
+            onCreateAnyway={() => {
+              api.wizardBlank(wizardProject).then((result) => {
+                refresh()
+                openById(result.id)
+              })
+            }}
+          />
+        )}
       </div>
     </div>
   )
@@ -186,6 +248,5 @@ function IconRecords() {
     </svg>
   )
 }
-
 
 export default App
